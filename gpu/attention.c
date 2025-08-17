@@ -301,17 +301,21 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                                 input, attn->d_model,
                                 &beta, attn->d_V[layer], attn->d_model));
         
-        // Compute attention scores using strided batch GEMM: scores = Q * K^T / sqrt(d_model)
+        // Compute attention scores for each sequence in the batch
         float scale = 1.0f / sqrtf(attn->d_model);
-        CHECK_CUBLAS(cublasSgemmStridedBatched(attn->cublas_handle,
-                                              CUBLAS_OP_N, CUBLAS_OP_T,
-                                              attn->seq_len, attn->seq_len, attn->d_model,
-                                              &scale, 
-                                              attn->d_Q[layer], attn->seq_len, attn->seq_len * attn->d_model,
-                                              attn->d_K[layer], attn->seq_len, attn->seq_len * attn->d_model,
-                                              &beta, 
-                                              attn->d_attn_scores[layer], attn->seq_len, attn->seq_len * attn->seq_len,
-                                              attn->batch_size));
+        for (int batch = 0; batch < attn->batch_size; batch++) {
+            float* Q_batch = attn->d_Q[layer] + batch * attn->seq_len * attn->d_model;
+            float* K_batch = attn->d_K[layer] + batch * attn->seq_len * attn->d_model;
+            float* scores_batch = attn->d_attn_scores[layer] + batch * attn->seq_len * attn->seq_len;
+            
+            // scores = Q * K^T / sqrt(d_model)
+            CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                    CUBLAS_OP_N, CUBLAS_OP_T,
+                                    attn->seq_len, attn->seq_len, attn->d_model,
+                                    &scale, Q_batch, attn->seq_len,
+                                    K_batch, attn->seq_len,
+                                    &beta, scores_batch, attn->seq_len));
+        }
         
         // Apply softmax to attention scores
         dim3 grid(attn->batch_size, attn->seq_len);
@@ -320,16 +324,20 @@ void forward_pass_attention(Attention* attn, float* d_X) {
         softmax_forward_kernel_attention<<<grid, block_size, shared_size>>>(
             attn->d_attn_weights[layer], attn->d_attn_scores[layer], attn->batch_size, attn->seq_len);
         
-        // Compute attention output using strided batch GEMM: attn_output = weights * V
-        CHECK_CUBLAS(cublasSgemmStridedBatched(attn->cublas_handle,
-                                              CUBLAS_OP_N, CUBLAS_OP_N,
-                                              attn->seq_len, attn->d_model, attn->seq_len,
-                                              &alpha,
-                                              attn->d_attn_weights[layer], attn->seq_len, attn->seq_len * attn->seq_len,
-                                              attn->d_V[layer], attn->seq_len, attn->seq_len * attn->d_model,
-                                              &beta,
-                                              attn->d_attn_output[layer], attn->seq_len, attn->seq_len * attn->d_model,
-                                              attn->batch_size));
+        // Compute attention output for each sequence in the batch
+        for (int batch = 0; batch < attn->batch_size; batch++) {
+            float* weights_batch = attn->d_attn_weights[layer] + batch * attn->seq_len * attn->seq_len;
+            float* V_batch = attn->d_V[layer] + batch * attn->seq_len * attn->d_model;
+            float* output_batch = attn->d_attn_output[layer] + batch * attn->seq_len * attn->d_model;
+            
+            // attn_output = weights * V
+            CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                    CUBLAS_OP_N, CUBLAS_OP_N,
+                                    attn->seq_len, attn->d_model, attn->seq_len,
+                                    &alpha, weights_batch, attn->seq_len,
+                                    V_batch, attn->seq_len,
+                                    &beta, output_batch, attn->seq_len));
+        }
         
         // Apply output projection: layer_output = attn_output * W_o
         CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
@@ -402,65 +410,63 @@ void backward_pass_attention(Attention* attn, float* d_X) {
                                 attn->d_d_layer_output[layer], attn->d_model,
                                 &beta, attn->d_d_attn_output[layer], attn->d_model));
         
-        // Backpropagate through attention mechanism using strided batch operations
+        // Backpropagate through attention mechanism for each sequence in batch
         CHECK_CUDA(cudaMemset(attn->d_dQ[layer], 0, total_seq * attn->d_model * sizeof(float)));
         CHECK_CUDA(cudaMemset(attn->d_dK[layer], 0, total_seq * attn->d_model * sizeof(float)));
         CHECK_CUDA(cudaMemset(attn->d_dV[layer], 0, total_seq * attn->d_model * sizeof(float)));
         
-        // Gradient w.r.t. V: dV = attn_weights^T * d_attn_output
-        CHECK_CUBLAS(cublasSgemmStridedBatched(attn->cublas_handle,
-                                              CUBLAS_OP_T, CUBLAS_OP_N,
-                                              attn->seq_len, attn->d_model, attn->seq_len,
-                                              &alpha,
-                                              attn->d_attn_weights[layer], attn->seq_len, attn->seq_len * attn->seq_len,
-                                              attn->d_d_attn_output[layer], attn->seq_len, attn->seq_len * attn->d_model,
-                                              &beta,
-                                              attn->d_dV[layer], attn->seq_len, attn->seq_len * attn->d_model,
-                                              attn->batch_size));
-        
-        // Gradient w.r.t. attention weights: d_attn_weights = d_attn_output * V^T
-        CHECK_CUBLAS(cublasSgemmStridedBatched(attn->cublas_handle,
-                                              CUBLAS_OP_N, CUBLAS_OP_T,
-                                              attn->seq_len, attn->seq_len, attn->d_model,
-                                              &alpha,
-                                              attn->d_d_attn_output[layer], attn->seq_len, attn->seq_len * attn->d_model,
-                                              attn->d_V[layer], attn->seq_len, attn->seq_len * attn->d_model,
-                                              &beta,
-                                              attn->d_d_attn_weights[layer], attn->seq_len, attn->seq_len * attn->seq_len,
-                                              attn->batch_size));
-        
-        // Backpropagate through softmax
-        dim3 grid(attn->batch_size, attn->seq_len);
-        int block_size = (256 < attn->seq_len) ? 256 : attn->seq_len;
-        int shared_size = block_size * sizeof(float);
-        softmax_backward_kernel_attention<<<grid, block_size, shared_size>>>(
-            attn->d_d_attn_scores[layer], attn->d_d_attn_weights[layer], attn->d_attn_weights[layer], 
-            attn->batch_size, attn->seq_len);
-        
-        // Gradient w.r.t. Q and K using strided batch GEMM
-        float scale = 1.0f / sqrtf(attn->d_model);
-        
-        // Gradient w.r.t. Q: dQ = d_attn_scores * K / sqrt(d_model)
-        CHECK_CUBLAS(cublasSgemmStridedBatched(attn->cublas_handle,
-                                              CUBLAS_OP_N, CUBLAS_OP_N,
-                                              attn->seq_len, attn->d_model, attn->seq_len,
-                                              &scale,
-                                              attn->d_d_attn_scores[layer], attn->seq_len, attn->seq_len * attn->seq_len,
-                                              attn->d_K[layer], attn->seq_len, attn->seq_len * attn->d_model,
-                                              &beta,
-                                              attn->d_dQ[layer], attn->seq_len, attn->seq_len * attn->d_model,
-                                              attn->batch_size));
-        
-        // Gradient w.r.t. K: dK = d_attn_scores^T * Q / sqrt(d_model)
-        CHECK_CUBLAS(cublasSgemmStridedBatched(attn->cublas_handle,
-                                              CUBLAS_OP_T, CUBLAS_OP_N,
-                                              attn->seq_len, attn->d_model, attn->seq_len,
-                                              &scale,
-                                              attn->d_d_attn_scores[layer], attn->seq_len, attn->seq_len * attn->seq_len,
-                                              attn->d_Q[layer], attn->seq_len, attn->seq_len * attn->d_model,
-                                              &beta,
-                                              attn->d_dK[layer], attn->seq_len, attn->seq_len * attn->d_model,
-                                              attn->batch_size));
+        for (int batch = 0; batch < attn->batch_size; batch++) {
+            float* d_attn_output_batch = attn->d_d_attn_output[layer] + batch * attn->seq_len * attn->d_model;
+            float* attn_weights_batch = attn->d_attn_weights[layer] + batch * attn->seq_len * attn->seq_len;
+            float* V_batch = attn->d_V[layer] + batch * attn->seq_len * attn->d_model;
+            float* Q_batch = attn->d_Q[layer] + batch * attn->seq_len * attn->d_model;
+            float* K_batch = attn->d_K[layer] + batch * attn->seq_len * attn->d_model;
+            float* d_attn_weights_batch = attn->d_d_attn_weights[layer] + batch * attn->seq_len * attn->seq_len;
+            float* dQ_batch = attn->d_dQ[layer] + batch * attn->seq_len * attn->d_model;
+            float* dK_batch = attn->d_dK[layer] + batch * attn->seq_len * attn->d_model;
+            float* dV_batch = attn->d_dV[layer] + batch * attn->seq_len * attn->d_model;
+            
+            // Gradient w.r.t. V: dV = attn_weights^T * d_attn_output
+            CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                    CUBLAS_OP_T, CUBLAS_OP_N,
+                                    attn->seq_len, attn->d_model, attn->seq_len,
+                                    &alpha, attn_weights_batch, attn->seq_len,
+                                    d_attn_output_batch, attn->seq_len,
+                                    &beta, dV_batch, attn->seq_len));
+            
+            // Gradient w.r.t. attention weights: d_attn_weights = d_attn_output * V^T
+            CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                    CUBLAS_OP_N, CUBLAS_OP_T,
+                                    attn->seq_len, attn->seq_len, attn->d_model,
+                                    &alpha, d_attn_output_batch, attn->seq_len,
+                                    V_batch, attn->seq_len,
+                                    &beta, d_attn_weights_batch, attn->seq_len));
+            
+            // Backpropagate through softmax
+            float* d_attn_scores_batch = attn->d_d_attn_scores[layer] + batch * attn->seq_len * attn->seq_len;
+            dim3 grid(1, attn->seq_len);
+            int block_size = (256 < attn->seq_len) ? 256 : attn->seq_len;
+            int shared_size = block_size * sizeof(float);
+            softmax_backward_kernel_attention<<<grid, block_size, shared_size>>>(
+                d_attn_scores_batch, d_attn_weights_batch, attn_weights_batch, 1, attn->seq_len);
+            
+            // Gradient w.r.t. Q: dQ = d_attn_scores * K / sqrt(d_model)
+            float scale = 1.0f / sqrtf(attn->d_model);
+            CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                    CUBLAS_OP_N, CUBLAS_OP_N,
+                                    attn->seq_len, attn->d_model, attn->seq_len,
+                                    &scale, d_attn_scores_batch, attn->seq_len,
+                                    K_batch, attn->seq_len,
+                                    &beta, dQ_batch, attn->seq_len));
+            
+            // Gradient w.r.t. K: dK = d_attn_scores^T * Q / sqrt(d_model)
+            CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                    CUBLAS_OP_T, CUBLAS_OP_N,
+                                    attn->seq_len, attn->d_model, attn->seq_len,
+                                    &scale, d_attn_scores_batch, attn->seq_len,
+                                    Q_batch, attn->seq_len,
+                                    &beta, dK_batch, attn->seq_len));
+        }
         
         // Gradient w.r.t. weight matrices
         // dW_q = input^T * dQ
