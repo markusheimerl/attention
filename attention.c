@@ -98,7 +98,7 @@ Attention* init_attention(int d_model, int seq_len, int num_layers, int batch_si
         attn->d_attn_output[layer] = (float*)malloc(qkv_size * sizeof(float));
         attn->d_layer_output[layer] = (float*)malloc(qkv_size * sizeof(float));
         
-        // Initialize weights with Xavier/Glorot initialization
+        // Initialize weights
         float scale = 1.0f / sqrtf(d_model);
         for (int i = 0; i < weight_size; i++) {
             attn->W_q[layer][i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale;
