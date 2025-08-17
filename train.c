@@ -12,9 +12,9 @@ int main() {
 
     // Parameters
     const int seq_len = 16;          // Sequence length
-    const int feature_dim = 4;      // Feature dimension (d_model)
-    const int num_layers = 2;       // Number of attention layers
-    const int num_samples = 1024;   // Number of training samples
+    const int feature_dim = 4;       // Feature dimension (d_model)
+    const int num_layers = 2;        // Number of attention layers
+    const int num_samples = 1024;    // Number of training samples
     const int batch_size = num_samples; // Full batch training
     
     // Generate attention task data
