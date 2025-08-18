@@ -11,33 +11,22 @@ int main() {
     openblas_set_num_threads(4);
 
     // Parameters
-    const int seq_len = 16;          // Sequence length
-    const int feature_dim = 4;       // Feature dimension (d_model)
-    const int num_layers = 2;        // Number of attention layers
-    const int num_samples = 1024;    // Number of training samples
-    const int batch_size = num_samples; // Full batch training
+    const int feature_dim = 16;
+    const int seq_len = 8;
+    const int num_sequences = 128;
+    const int num_layers = 2;
+    const int batch_size = num_sequences;
     
-    // Generate attention task data
+    // Generate synthetic sequence data
     float *X, *y;
-    generate_attention_data(&X, &y, num_samples, seq_len, feature_dim);
-    
-    // Print some sample data for inspection
-    printf("Sample data for inspection:\n");
-    printf("============================\n");
-    for (int i = 0; i < 3; i++) {
-        print_sample_data(X, y, i, seq_len, feature_dim);
-    }
+    generate_synthetic_data(&X, &y, num_sequences, seq_len, feature_dim, feature_dim, -3.0f, 3.0f);
     
     // Initialize attention network
     Attention* attn = init_attention(feature_dim, seq_len, num_layers, batch_size);
     
     // Training parameters
-    const int num_epochs = 20000;
-    const float learning_rate = 0.0003f;
-    
-    printf("Starting training...\n");
-    printf("Architecture: %d layers, d_model=%d, seq_len=%d, batch_size=%d\n\n", 
-           num_layers, feature_dim, seq_len, batch_size);
+    const int num_epochs = 10000;
+    const float learning_rate = 0.0001f;
     
     // Training loop
     for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
@@ -48,7 +37,7 @@ int main() {
         float loss = calculate_loss_attention(attn, y);
 
         // Print progress
-        if (epoch % 100 == 0) {
+        if (epoch > 0 && epoch % 100 == 0) {
             printf("Epoch [%d/%d], Loss: %.8f\n", epoch, num_epochs, loss);
         }
 
@@ -71,7 +60,7 @@ int main() {
 
     // Save model and data with timestamped filenames
     save_attention(attn, model_fname);
-    save_data(X, y, num_samples, seq_len, feature_dim, data_fname);
+    save_data(X, y, num_sequences, seq_len, feature_dim, feature_dim, data_fname);
     
     // Load the model back and verify
     printf("\nVerifying saved model...\n");
@@ -88,117 +77,61 @@ int main() {
 
     printf("\nEvaluating model performance...\n");
 
-    // Calculate accuracy for attention task
-    int correct_predictions = 0;
-    int total_predictions = num_samples;
+    // Calculate R² scores
+    printf("\nR² scores:\n");
     int last_layer = loaded_attn->num_layers - 1;
-    
-    for (int sample = 0; sample < num_samples; sample++) {
-        // Find the expected max row from input
-        int expected_max_row = 0;
-        float max_val = X[sample * seq_len * feature_dim + 0];
-        for (int seq = 1; seq < seq_len; seq++) {
-            float current_val = X[sample * seq_len * feature_dim + seq * feature_dim + 0];
-            if (current_val > max_val) {
-                max_val = current_val;
-                expected_max_row = seq;
+    int total_samples = num_sequences * seq_len;
+    for (int i = 0; i < feature_dim; i++) {
+        float y_mean = 0.0f;
+        for (int seq = 0; seq < num_sequences; seq++) {
+            for (int t = 0; t < seq_len; t++) {
+                int idx = seq * seq_len * feature_dim + t * feature_dim + i;
+                y_mean += y[idx];
             }
         }
-        
-        // Check if model output matches expected pattern (all rows should be the max row)
-        int sample_correct = 1;
-        float tolerance = 0.5f;  // Allow some tolerance for floating point comparison
-        
-        for (int seq = 0; seq < seq_len && sample_correct; seq++) {
-            for (int feat = 0; feat < feature_dim && sample_correct; feat++) {
-                float predicted = loaded_attn->layer_output[last_layer][sample * seq_len * feature_dim + seq * feature_dim + feat];
-                float expected = X[sample * seq_len * feature_dim + expected_max_row * feature_dim + feat];
-                
-                if (fabsf(predicted - expected) > tolerance) {
-                    sample_correct = 0;
-                }
-            }
-        }
-        
-        if (sample_correct) {
-            correct_predictions++;
-        }
-    }
-    
-    printf("Attention Task Accuracy: %d/%d (%.1f%%)\n", 
-           correct_predictions, total_predictions, 
-           (100.0f * correct_predictions) / total_predictions);
+        y_mean /= total_samples;
 
-    // Print sample predictions
-    printf("\nSample Predictions (first 5 samples):\n");
-    printf("=====================================\n");
-
-    for (int sample = 0; sample < 5; sample++) {
-        printf("\nSample %d:\n", sample);
-        printf("Input:\n");
-        
-        // Print input
-        for (int seq = 0; seq < seq_len; seq++) {
-            printf("  [");
-            for (int feat = 0; feat < feature_dim; feat++) {
-                printf("%6.2f", X[sample * seq_len * feature_dim + seq * feature_dim + feat]);
-                if (feat < feature_dim - 1) printf(", ");
-            }
-            printf("]\n");
-        }
-        
-        // Find expected max row
-        int expected_max_row = 0;
-        float max_val = X[sample * seq_len * feature_dim + 0];
-        for (int seq = 1; seq < seq_len; seq++) {
-            float current_val = X[sample * seq_len * feature_dim + seq * feature_dim + 0];
-            if (current_val > max_val) {
-                max_val = current_val;
-                expected_max_row = seq;
+        float ss_res = 0.0f;
+        float ss_tot = 0.0f;
+        for (int seq = 0; seq < num_sequences; seq++) {
+            for (int t = 0; t < seq_len; t++) {
+                int idx = seq * seq_len * feature_dim + t * feature_dim + i;
+                float diff_res = y[idx] - loaded_attn->layer_output[last_layer][idx];
+                float diff_tot = y[idx] - y_mean;
+                ss_res += diff_res * diff_res;
+                ss_tot += diff_tot * diff_tot;
             }
         }
-        
-        printf("Expected max row: %d (value: %.2f)\n", expected_max_row, max_val);
-        printf("Model Output:\n");
-        
-        // Print model output
-        for (int seq = 0; seq < seq_len; seq++) {
-            printf("  [");
-            for (int feat = 0; feat < feature_dim; feat++) {
-                float pred = loaded_attn->layer_output[last_layer][sample * seq_len * feature_dim + seq * feature_dim + feat];
-                printf("%6.2f", pred);
-                if (feat < feature_dim - 1) printf(", ");
-            }
-            printf("]\n");
-        }
-        
-        printf("Target Output:\n");
-        
-        // Print target output
-        for (int seq = 0; seq < seq_len; seq++) {
-            printf("  [");
-            for (int feat = 0; feat < feature_dim; feat++) {
-                printf("%6.2f", y[sample * seq_len * feature_dim + seq * feature_dim + feat]);
-                if (feat < feature_dim - 1) printf(", ");
-            }
-            printf("]\n");
-        }
+        float r2 = 1.0f - (ss_res / ss_tot);
+        printf("R² score for output y%d: %.8f\n", i, r2);
     }
-    
-    // Calculate MSE per feature
-    printf("\nMSE per feature:\n");
-    for (int feat = 0; feat < feature_dim; feat++) {
-        float mse = 0.0f;
-        for (int sample = 0; sample < num_samples; sample++) {
-            for (int seq = 0; seq < seq_len; seq++) {
-                float pred = loaded_attn->layer_output[last_layer][sample * seq_len * feature_dim + seq * feature_dim + feat];
-                float actual = y[sample * seq_len * feature_dim + seq * feature_dim + feat];
-                float diff = pred - actual;
-                mse += diff * diff;
+
+    // Print sample predictions from first sequence
+    printf("\nSample Predictions (first sequence, first 10 time steps):\n");
+    printf("Time\tOutput\t\tPredicted\tActual\t\tDifference\n");
+    printf("----------------------------------------------------------------\n");
+
+    for (int i = 0; i < feature_dim; i++) {
+        printf("\ny%d:\n", i);
+        int seq = 0; // First sequence
+        for (int t = 0; t < seq_len && t < 10; t++) {
+            int idx = seq * seq_len * feature_dim + t * feature_dim + i;
+            float pred = loaded_attn->layer_output[last_layer][idx];
+            float actual = y[idx];
+            float diff = pred - actual;
+            printf("t=%d\t\t%8.3f\t%8.3f\t%8.3f\n", t, pred, actual, diff);
+        }
+        
+        // Calculate MAE for this output across all sequences and time steps
+        float mae = 0.0f;
+        for (int seq = 0; seq < num_sequences; seq++) {
+            for (int t = 0; t < seq_len; t++) {
+                int idx = seq * seq_len * feature_dim + t * feature_dim + i;
+                mae += fabs(loaded_attn->layer_output[last_layer][idx] - y[idx]);
             }
         }
-        mse /= (num_samples * seq_len);
-        printf("Feature %d MSE: %.6f\n", feat, mse);
+        mae /= total_samples;
+        printf("Mean Absolute Error for y%d: %.3f\n", i, mae);
     }
     
     // Cleanup
