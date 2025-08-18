@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -26,23 +25,24 @@ int main() {
 
     // Parameters
     const int input_dim = 16;
-    const int hidden_dim = 128;
     const int output_dim = 4;
-    const int seq_len = 8;
-    const int num_sequences = 128;
+    const int head_dim = 64;
+    const int num_heads = 8;
+    const int seq_len = 16;
+    const int num_sequences = 64;
     const int num_layers = 2;
     const int batch_size = num_sequences;
     
-    // Generate synthetic sequence data
+    // Generate synthetic sequence data with position dependencies
     float *X, *y;
-    generate_synthetic_data(&X, &y, num_sequences, seq_len, input_dim, output_dim, -3.0f, 3.0f);
+    generate_synthetic_data(&X, &y, num_sequences, seq_len, input_dim, output_dim, -2.0f, 2.0f);
     
-    // Reshape data for batch processing (time-major)
+    // Reshape data for batch processing
     float *X_reshaped, *y_reshaped;
     reshape_data_for_batch_processing(X, y, &X_reshaped, &y_reshaped, num_sequences, seq_len, input_dim, output_dim);
     
     // Initialize attention model
-    ATTN* attn = init_attn(input_dim, hidden_dim, output_dim, seq_len, batch_size, num_layers);
+    Attention* attn = init_attention(input_dim, output_dim, head_dim, num_heads, seq_len, batch_size, num_layers);
     
     // Training parameters
     const int num_epochs = 10000;
@@ -51,10 +51,10 @@ int main() {
     // Training loop
     for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
         // Forward pass
-        forward_pass_attn(attn, X_reshaped);
+        forward_pass_attention(attn, X_reshaped);
         
         // Calculate loss
-        float loss = calculate_loss_attn(attn, y_reshaped);
+        float loss = calculate_loss_attention(attn, y_reshaped);
 
         // Print progress
         if (epoch > 0 && epoch % 100 == 0) {
@@ -65,11 +65,11 @@ int main() {
         if (epoch == num_epochs) break;
 
         // Backward pass
-        zero_gradients_attn(attn);
-        backward_pass_attn(attn, X_reshaped);
+        zero_gradients_attention(attn);
+        backward_pass_attention(attn, X_reshaped);
         
         // Update weights
-        update_weights_attn(attn, learning_rate);
+        update_weights_attention(attn, learning_rate);
     }
 
     // Get timestamp for filenames
@@ -79,27 +79,31 @@ int main() {
     strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_data.csv", localtime(&now));
 
     // Save model and data with timestamped filenames
-    save_attn(attn, model_fname);
+    save_attention(attn, model_fname);
     save_data(X, y, num_sequences, seq_len, input_dim, output_dim, data_fname);
     
     // Load the model back and verify
     printf("\nVerifying saved model...\n");
 
     // Load the model back with original batch_size
-    ATTN* loaded_attn = load_attn(model_fname, batch_size);
+    Attention* loaded_attn = load_attention(model_fname, batch_size);
     
     // Forward pass with loaded model
-    forward_pass_attn(loaded_attn, X_reshaped);
+    forward_pass_attention(loaded_attn, X_reshaped);
     
     // Calculate and print loss with loaded model
-    float verification_loss = calculate_loss_attn(loaded_attn, y_reshaped);
+    float verification_loss = calculate_loss_attention(loaded_attn, y_reshaped);
     printf("Loss with loaded model: %.8f\n", verification_loss);
 
     printf("\nEvaluating model performance...\n");
 
-    // Calculate R² scores across all sequences and time steps
-    printf("\nR² scores:\n");
+    // Copy predictions for evaluation
     int last_layer = loaded_attn->num_layers - 1;
+    float* predictions = (float*)malloc(seq_len * batch_size * output_dim * sizeof(float));
+    memcpy(predictions, loaded_attn->layer_output[last_layer], seq_len * batch_size * output_dim * sizeof(float));
+
+    // Calculate R² scores
+    printf("\nR² scores:\n");
     int total_samples = num_sequences * seq_len;
     for (int i = 0; i < output_dim; i++) {
         float y_mean = 0.0f;
@@ -116,10 +120,8 @@ int main() {
         for (int t = 0; t < seq_len; t++) {
             for (int b = 0; b < num_sequences; b++) {
                 int idx = t * num_sequences * output_dim + b * output_dim + i;
-                float pred = loaded_attn->layer_output[last_layer][idx];
-                float actual = y_reshaped[idx];
-                float diff_res = actual - pred;
-                float diff_tot = actual - y_mean;
+                float diff_res = y_reshaped[idx] - predictions[idx];
+                float diff_tot = y_reshaped[idx] - y_mean;
                 ss_res += diff_res * diff_res;
                 ss_tot += diff_tot * diff_tot;
             }
@@ -138,7 +140,7 @@ int main() {
         for (int t = 0; t < 10; t++) {
             // First sequence (b=0) in reshaped format
             int idx = t * num_sequences * output_dim + 0 * output_dim + i;
-            float pred = loaded_attn->layer_output[last_layer][idx];
+            float pred = predictions[idx];
             float actual = y_reshaped[idx];
             float diff = pred - actual;
             printf("t=%d\t\t%8.3f\t%8.3f\t%8.3f\n", t, pred, actual, diff);
@@ -149,8 +151,7 @@ int main() {
         for (int t = 0; t < seq_len; t++) {
             for (int b = 0; b < num_sequences; b++) {
                 int idx = t * num_sequences * output_dim + b * output_dim + i;
-                float pred = loaded_attn->layer_output[last_layer][idx];
-                mae += fabsf(pred - y_reshaped[idx]);
+                mae += fabs(predictions[idx] - y_reshaped[idx]);
             }
         }
         mae /= total_samples;
@@ -162,8 +163,9 @@ int main() {
     free(y);
     free(X_reshaped);
     free(y_reshaped);
-    free_attn(attn);
-    free_attn(loaded_attn);
+    free(predictions);
+    free_attention(attn);
+    free_attention(loaded_attn);
     
     return 0;
 }
