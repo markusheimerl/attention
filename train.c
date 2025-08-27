@@ -11,9 +11,8 @@ int main() {
     openblas_set_num_threads(4);
 
     // Parameters
-    const int seq_len = 16;          // Sequence length
+    const int seq_len = 8;          // Sequence length
     const int feature_dim = 4;       // Feature dimension (d_model)
-    const int num_layers = 2;        // Number of attention layers
     const int num_samples = 1024;    // Number of training samples
     const int batch_size = num_samples; // Full batch training
     
@@ -29,15 +28,15 @@ int main() {
     }
     
     // Initialize attention network
-    Attention* attn = init_attention(feature_dim, seq_len, num_layers, batch_size);
+    Attention* attn = init_attention(feature_dim, seq_len, batch_size);
     
     // Training parameters
     const int num_epochs = 20000;
     const float learning_rate = 0.0003f;
     
     printf("Starting training...\n");
-    printf("Architecture: %d layers, d_model=%d, seq_len=%d, batch_size=%d\n\n", 
-           num_layers, feature_dim, seq_len, batch_size);
+    printf("Architecture: d_model=%d, seq_len=%d, batch_size=%d\n\n", 
+           feature_dim, seq_len, batch_size);
     
     // Training loop
     for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
@@ -91,7 +90,6 @@ int main() {
     // Calculate accuracy for attention task
     int correct_predictions = 0;
     int total_predictions = num_samples;
-    int last_layer = loaded_attn->num_layers - 1;
     
     for (int sample = 0; sample < num_samples; sample++) {
         // Find the expected max row from input
@@ -111,7 +109,7 @@ int main() {
         
         for (int seq = 0; seq < seq_len && sample_correct; seq++) {
             for (int feat = 0; feat < feature_dim && sample_correct; feat++) {
-                float predicted = loaded_attn->layer_output[last_layer][sample * seq_len * feature_dim + seq * feature_dim + feat];
+                float predicted = loaded_attn->layer_output[sample * seq_len * feature_dim + seq * feature_dim + feat];
                 float expected = X[sample * seq_len * feature_dim + expected_max_row * feature_dim + feat];
                 
                 if (fabsf(predicted - expected) > tolerance) {
@@ -165,7 +163,7 @@ int main() {
         for (int seq = 0; seq < seq_len; seq++) {
             printf("  [");
             for (int feat = 0; feat < feature_dim; feat++) {
-                float pred = loaded_attn->layer_output[last_layer][sample * seq_len * feature_dim + seq * feature_dim + feat];
+                float pred = loaded_attn->layer_output[sample * seq_len * feature_dim + seq * feature_dim + feat];
                 printf("%6.2f", pred);
                 if (feat < feature_dim - 1) printf(", ");
             }
@@ -191,7 +189,7 @@ int main() {
         float mse = 0.0f;
         for (int sample = 0; sample < num_samples; sample++) {
             for (int seq = 0; seq < seq_len; seq++) {
-                float pred = loaded_attn->layer_output[last_layer][sample * seq_len * feature_dim + seq * feature_dim + feat];
+                float pred = loaded_attn->layer_output[sample * seq_len * feature_dim + seq * feature_dim + feat];
                 float actual = y[sample * seq_len * feature_dim + seq * feature_dim + feat];
                 float diff = pred - actual;
                 mse += diff * diff;

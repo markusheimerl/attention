@@ -1,5 +1,5 @@
 CC = clang
-CFLAGS = -O3 -march=native -fno-math-errno -funsafe-math-optimizations -fno-rounding-math -Wall -Wextra
+CFLAGS = -O3 -march=native -ffast-math -Wall -Wextra
 LDFLAGS = -lopenblas -lm -flto
 
 train.out: attention.o data.o train.o
