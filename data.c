@@ -21,7 +21,7 @@ static float basis(int op, float x, float y) {
     return 0.0f;
 }
 
-static void print_term(float coeff, int op, int idx1, int idx2, int offset1, int offset2, int sign, int max_offset, int first_term) {
+static void print_term(float coeff, int op, int idx1, int idx2, int offset1, int offset2, int sign, int first_term) {
     if (!first_term) {
         printf(sign ? " - " : " + ");
     } else if (sign) {
@@ -34,34 +34,34 @@ static void print_term(float coeff, int op, int idx1, int idx2, int offset1, int
     
     if (op % 11 == 10) {
         // Copy - single input
-        if (max_offset == 0 || offset1 == 0) {
+        if (offset1 == 0) {
             printf("x%d", idx1);
         } else {
-            printf("x%d[t%+d]", idx1, max_offset > 0 ? -offset1 : offset1);
+            printf("x%d[t%+d]", idx1, offset1);
         }
     } else {
         // Two-input functions
         printf("%s(", op_name);
         
-        if (max_offset == 0 || offset1 == 0) {
+        if (offset1 == 0) {
             printf("x%d", idx1);
         } else {
-            printf("x%d[t%+d]", idx1, max_offset > 0 ? -offset1 : offset1);
+            printf("x%d[t%+d]", idx1, offset1);
         }
         
         printf(",");
         
-        if (max_offset == 0 || offset2 == 0) {
+        if (offset2 == 0) {
             printf("x%d", idx2);
         } else {
-            printf("x%d[t%+d]", idx2, max_offset > 0 ? -offset2 : offset2);
+            printf("x%d[t%+d]", idx2, offset2);
         }
         
         printf(")");
     }
 }
 
-static void print_function(int output_idx, const float* params, int n_terms, int max_offset) {
+static void print_function(int output_idx, const float* params, int n_terms) {
     printf("y%d =", output_idx);
     
     for (int i = 0; i < n_terms; i++) {
@@ -74,13 +74,13 @@ static void print_function(int output_idx, const float* params, int n_terms, int
         int offset2 = (int)params[base + 5];
         int sign = (int)params[base + 6] % 2;
         
-        print_term(coeff, op, idx1, idx2, offset1, offset2, sign, max_offset, i == 0);
+        print_term(coeff, op, idx1, idx2, offset1, offset2, sign, i == 0);
     }
     printf("\n");
 }
 
 static float eval_function(const float* params, int n_terms, const float* X, 
-                          int sample, int t, int input_dim, int seq_len, int max_offset) {
+                          int sample, int t, int input_dim, int seq_len) {
     float result = 0.0f;
     
     for (int i = 0; i < n_terms; i++) {
@@ -93,13 +93,13 @@ static float eval_function(const float* params, int n_terms, const float* X,
         int offset2 = (int)params[base + 5];
         int sign = (int)params[base + 6] % 2;
         
-        // Get effective time indices
-        int eff_t1 = max_offset > 0 ? fmaxf(0, t - offset1) : 
-                     max_offset < 0 ? fmaxf(0, fminf(seq_len - 1, t + offset1)) : t;
-        int eff_t2 = max_offset > 0 ? fmaxf(0, t - offset2) : 
-                     max_offset < 0 ? fmaxf(0, fminf(seq_len - 1, t + offset2)) : t;
+        // Calculate effective time indices
+        int eff_t1 = t + offset1;
+        int eff_t2 = t + offset2;
         
-        if (eff_t1 >= seq_len || eff_t2 >= seq_len || eff_t1 < 0 || eff_t2 < 0) continue;
+        // Clamp to valid sequence bounds
+        eff_t1 = fmaxf(0, fminf(seq_len - 1, eff_t1));
+        eff_t2 = fmaxf(0, fminf(seq_len - 1, eff_t2));
         
         // Extract values from temporal pool
         int base_idx1 = sample * seq_len * input_dim + eff_t1 * input_dim;
@@ -139,8 +139,22 @@ void generate_data(float** X, float** y, int num_samples, int seq_len, int input
             all_params[base + 1] = (float)(rand() % 11);                      // operation
             all_params[base + 2] = (float)(rand() % input_dim);               // input idx 1
             all_params[base + 3] = (float)(rand() % input_dim);               // input idx 2
-            all_params[base + 4] = (float)(rand() % (abs(max_offset) + 1));   // time offset 1
-            all_params[base + 5] = (float)(rand() % (abs(max_offset) + 1));   // time offset 2
+            
+            // Generate temporal offsets based on max_offset mode
+            if (max_offset == 0) {
+                // No sequence dependencies
+                all_params[base + 4] = 0.0f;
+                all_params[base + 5] = 0.0f;
+            } else if (max_offset > 0) {
+                // Bidirectional: [-max_offset, +max_offset]
+                all_params[base + 4] = (float)(rand() % (2 * max_offset + 1) - max_offset);
+                all_params[base + 5] = (float)(rand() % (2 * max_offset + 1) - max_offset);
+            } else {
+                // Causal: [max_offset, 0] (max_offset is negative)
+                all_params[base + 4] = (float)(rand() % (-max_offset + 1) + max_offset);
+                all_params[base + 5] = (float)(rand() % (-max_offset + 1) + max_offset);
+            }
+            
             all_params[base + 6] = (float)(rand() % 2);                       // add/subtract
         }
     }
@@ -149,7 +163,7 @@ void generate_data(float** X, float** y, int num_samples, int seq_len, int input
     printf("\nGenerated synthetic functions:\n");
     for (int out = 0; out < output_dim; out++) {
         float* params = &all_params[out * n_terms * params_per_term];
-        print_function(out, params, n_terms, max_offset);
+        print_function(out, params, n_terms);
     }
     printf("\n");
     
@@ -159,7 +173,7 @@ void generate_data(float** X, float** y, int num_samples, int seq_len, int input
             for (int out = 0; out < output_dim; out++) {
                 int y_idx = sample * seq_len * output_dim + t * output_dim + out;
                 float* params = &all_params[out * n_terms * params_per_term];
-                (*y)[y_idx] = eval_function(params, n_terms, *X, sample, t, input_dim, seq_len, max_offset);
+                (*y)[y_idx] = eval_function(params, n_terms, *X, sample, t, input_dim, seq_len);
             }
         }
     }

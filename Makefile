@@ -19,4 +19,3 @@ run: train.out
 
 clean:
 	rm -f *.out *.o *.csv *.bin
-	$(MAKE) clean -C gpu
