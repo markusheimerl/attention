@@ -8,56 +8,58 @@
 #include <cblas.h>
 
 typedef struct {
-    // Weights
-    float* W_q;      // [input_dim x head_dim]
-    float* W_k;      // [input_dim x head_dim] 
-    float* W_v;      // [input_dim x head_dim]
-    float* W_o;      // [head_dim x output_dim]
+    // Weights and gradients
+    float** W_q;      // [num_layers][d_model x d_model] - Query weights
+    float** W_k;      // [num_layers][d_model x d_model] - Key weights  
+    float** W_v;      // [num_layers][d_model x d_model] - Value weights
+    float** W_o;      // [num_layers][d_model x d_model] - Output weights
+    float** W_q_grad; // [num_layers][d_model x d_model]
+    float** W_k_grad; // [num_layers][d_model x d_model]
+    float** W_v_grad; // [num_layers][d_model x d_model]
+    float** W_o_grad; // [num_layers][d_model x d_model]
     
-    // Gradients
-    float* W_q_grad; // [input_dim x head_dim]
-    float* W_k_grad; // [input_dim x head_dim]
-    float* W_v_grad; // [input_dim x head_dim]
-    float* W_o_grad; // [head_dim x output_dim]
-    
-    // AdamW parameters
-    float* W_q_m; float* W_q_v; // First and second moments for W_q
-    float* W_k_m; float* W_k_v; // First and second moments for W_k
-    float* W_v_m; float* W_v_v; // First and second moments for W_v
-    float* W_o_m; float* W_o_v; // First and second moments for W_o
-    float beta1;         // Exponential decay rate for first moment estimates
-    float beta2;         // Exponential decay rate for second moment estimates
-    float epsilon;       // Small constant for numerical stability
-    int t;               // Time step
-    float weight_decay;  // Weight decay parameter for AdamW
+    // Adam parameters
+    float** W_q_m;    // First moment estimates for W_q
+    float** W_q_v;    // Second moment estimates for W_q
+    float** W_k_m;    // First moment estimates for W_k
+    float** W_k_v;    // Second moment estimates for W_k
+    float** W_v_m;    // First moment estimates for W_v
+    float** W_v_v;    // Second moment estimates for W_v
+    float** W_o_m;    // First moment estimates for W_o
+    float** W_o_v;    // Second moment estimates for W_o
+    float beta1;      // Exponential decay rate for first moment estimates
+    float beta2;      // Exponential decay rate for second moment estimates
+    float epsilon;    // Small constant for numerical stability
+    int t;            // Time step
+    float weight_decay; // Weight decay parameter for AdamW regularization
     
     // Layer outputs and working buffers
-    float* layer_Q;      // [batch_size*seq_len x head_dim]
-    float* layer_K;      // [batch_size*seq_len x head_dim]
-    float* layer_V;      // [batch_size*seq_len x head_dim]
-    float* layer_scores; // [batch_size*seq_len x seq_len]
-    float* layer_attn;   // [batch_size*seq_len x seq_len]
-    float* layer_context;// [batch_size*seq_len x head_dim]
-    float* layer_output; // [batch_size*seq_len x output_dim]
+    float** Q;              // [num_layers][batch_size * seq_len x d_model] - Queries
+    float** K;              // [num_layers][batch_size * seq_len x d_model] - Keys
+    float** V;              // [num_layers][batch_size * seq_len x d_model] - Values
+    float** attn_scores;    // [num_layers][batch_size * seq_len x seq_len] - Attention scores
+    float** attn_weights;   // [num_layers][batch_size * seq_len x seq_len] - Attention weights (softmax)
+    float** attn_output;    // [num_layers][batch_size * seq_len x d_model] - Attention output
+    float** layer_output;   // [num_layers][batch_size * seq_len x d_model] - Final layer output
     
-    // Error buffers
-    float* error_output;  // [batch_size*seq_len x output_dim]
-    float* error_context; // [batch_size*seq_len x head_dim]
-    float* error_Q;       // [batch_size*seq_len x head_dim]
-    float* error_K;       // [batch_size*seq_len x head_dim]
-    float* error_V;       // [batch_size*seq_len x head_dim]
-    float* error_scores;  // [batch_size*seq_len x seq_len]
+    // Gradient buffers
+    float** dQ;             // [num_layers][batch_size * seq_len x d_model]
+    float** dK;             // [num_layers][batch_size * seq_len x d_model]  
+    float** dV;             // [num_layers][batch_size * seq_len x d_model]
+    float** d_attn_scores;  // [num_layers][batch_size * seq_len x seq_len]
+    float** d_attn_weights; // [num_layers][batch_size * seq_len x seq_len]
+    float** d_attn_output;  // [num_layers][batch_size * seq_len x d_model]
+    float** d_layer_output; // [num_layers][batch_size * seq_len x d_model]
     
     // Dimensions
-    int input_dim;
-    int head_dim;
-    int output_dim;
-    int seq_len;
-    int batch_size;
+    int d_model;      // Model dimension (feature_dim)
+    int seq_len;      // Sequence length
+    int num_layers;   // Number of attention layers
+    int batch_size;   // Batch size
 } Attention;
 
 // Function prototypes
-Attention* init_attention(int input_dim, int head_dim, int output_dim, int seq_len, int batch_size);
+Attention* init_attention(int d_model, int seq_len, int num_layers, int batch_size);
 void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, float* X);
 float calculate_loss_attention(Attention* attn, float* y);
