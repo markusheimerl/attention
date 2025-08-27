@@ -101,23 +101,30 @@ int main() {
     float verification_loss = calculate_loss_attention(loaded_attn, y);
     printf("Loss with loaded model (sample batch): %.8f\n", verification_loss);
 
-    printf("\nEvaluating model performance...\n");
+    // Generate NEW evaluation dataset
+    printf("\nGenerating new evaluation dataset...\n");
+    const int eval_samples = 2048;  // Smaller evaluation set
+    float *X_eval, *y_eval;
+    generate_attention_data(&X_eval, &y_eval, eval_samples, seq_len, feature_dim);
+    
+    printf("\nEvaluating model performance on NEW data...\n");
 
-    // Calculate accuracy for attention task on all data
+    // Calculate accuracy for attention task on NEW data
     int correct_predictions = 0;
     int total_predictions = 0;
+    const int eval_batches = (eval_samples + batch_size - 1) / batch_size;
     
     // Process evaluation in batches
-    for (int batch = 0; batch < num_batches; batch++) {
+    for (int batch = 0; batch < eval_batches; batch++) {
         int start_idx = batch * batch_size;
-        int end_idx = (start_idx + batch_size > num_samples) ? num_samples : start_idx + batch_size;
+        int end_idx = (start_idx + batch_size > eval_samples) ? eval_samples : start_idx + batch_size;
         int current_batch_size = end_idx - start_idx;
         
         // Skip incomplete batches for simplicity
         if (current_batch_size < batch_size) continue;
         
         // Extract batch data
-        float* X_batch = X + start_idx * seq_len * feature_dim;
+        float* X_batch = X_eval + start_idx * seq_len * feature_dim;
         
         // Forward pass
         forward_pass_attention(loaded_attn, X_batch);
@@ -128,9 +135,9 @@ int main() {
             
             // Find the expected max row from input
             int expected_max_row = 0;
-            float max_val = X[global_sample * seq_len * feature_dim + 0];
+            float max_val = X_eval[global_sample * seq_len * feature_dim + 0];
             for (int seq = 1; seq < seq_len; seq++) {
-                float current_val = X[global_sample * seq_len * feature_dim + seq * feature_dim + 0];
+                float current_val = X_eval[global_sample * seq_len * feature_dim + seq * feature_dim + 0];
                 if (current_val > max_val) {
                     max_val = current_val;
                     expected_max_row = seq;
@@ -144,7 +151,7 @@ int main() {
             for (int seq = 0; seq < seq_len && sample_correct; seq++) {
                 for (int feat = 0; feat < feature_dim && sample_correct; feat++) {
                     float predicted = loaded_attn->layer_output[sample * seq_len * feature_dim + seq * feature_dim + feat];
-                    float expected = X[global_sample * seq_len * feature_dim + expected_max_row * feature_dim + feat];
+                    float expected = X_eval[global_sample * seq_len * feature_dim + expected_max_row * feature_dim + feat];
                     
                     if (fabsf(predicted - expected) > tolerance) {
                         sample_correct = 0;
@@ -159,15 +166,15 @@ int main() {
         }
     }
     
-    printf("Attention Task Accuracy: %d/%d (%.1f%%)\n", 
+    printf("Attention Task Accuracy on NEW data: %d/%d (%.1f%%)\n", 
            correct_predictions, total_predictions, 
            (100.0f * correct_predictions) / total_predictions);
 
-    // Print sample predictions (first batch)
-    printf("\nSample Predictions (first 5 samples):\n");
-    printf("=====================================\n");
+    // Print sample predictions from NEW data (first batch)
+    printf("\nSample Predictions from NEW evaluation data (first 5 samples):\n");
+    printf("=============================================================\n");
 
-    forward_pass_attention(loaded_attn, X);
+    forward_pass_attention(loaded_attn, X_eval);
     
     for (int sample = 0; sample < 5; sample++) {
         printf("\nSample %d:\n", sample);
@@ -177,7 +184,7 @@ int main() {
         for (int seq = 0; seq < seq_len; seq++) {
             printf("  [");
             for (int feat = 0; feat < feature_dim; feat++) {
-                printf("%6.2f", X[sample * seq_len * feature_dim + seq * feature_dim + feat]);
+                printf("%6.2f", X_eval[sample * seq_len * feature_dim + seq * feature_dim + feat]);
                 if (feat < feature_dim - 1) printf(", ");
             }
             printf("]\n");
@@ -185,9 +192,9 @@ int main() {
         
         // Find expected max row
         int expected_max_row = 0;
-        float max_val = X[sample * seq_len * feature_dim + 0];
+        float max_val = X_eval[sample * seq_len * feature_dim + 0];
         for (int seq = 1; seq < seq_len; seq++) {
-            float current_val = X[sample * seq_len * feature_dim + seq * feature_dim + 0];
+            float current_val = X_eval[sample * seq_len * feature_dim + seq * feature_dim + 0];
             if (current_val > max_val) {
                 max_val = current_val;
                 expected_max_row = seq;
@@ -214,21 +221,21 @@ int main() {
         for (int seq = 0; seq < seq_len; seq++) {
             printf("  [");
             for (int feat = 0; feat < feature_dim; feat++) {
-                printf("%6.2f", y[sample * seq_len * feature_dim + seq * feature_dim + feat]);
+                printf("%6.2f", y_eval[sample * seq_len * feature_dim + seq * feature_dim + feat]);
                 if (feat < feature_dim - 1) printf(", ");
             }
             printf("]\n");
         }
     }
     
-    // Calculate MSE per feature on first batch
-    printf("\nMSE per feature (first batch):\n");
+    // Calculate MSE per feature on first evaluation batch
+    printf("\nMSE per feature (first evaluation batch):\n");
     for (int feat = 0; feat < feature_dim; feat++) {
         float mse = 0.0f;
         for (int sample = 0; sample < batch_size; sample++) {
             for (int seq = 0; seq < seq_len; seq++) {
                 float pred = loaded_attn->layer_output[sample * seq_len * feature_dim + seq * feature_dim + feat];
-                float actual = y[sample * seq_len * feature_dim + seq * feature_dim + feat];
+                float actual = y_eval[sample * seq_len * feature_dim + seq * feature_dim + feat];
                 float diff = pred - actual;
                 mse += diff * diff;
             }
@@ -240,6 +247,8 @@ int main() {
     // Cleanup
     free(X);
     free(y);
+    free(X_eval);
+    free(y_eval);
     free_attention(attn);
     free_attention(loaded_attn);
     
