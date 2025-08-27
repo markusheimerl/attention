@@ -8,11 +8,11 @@
 
 int main() {
     srand(time(NULL));
-    openblas_set_num_threads(4);
+    openblas_set_num_threads(8);
 
     // Parameters
     const int seq_len = 8;          // Sequence length
-    const int feature_dim = 4;       // Feature dimension (d_model)
+    const int feature_dim = 8;       // Feature dimension (d_model)
     const int num_samples = 1024;    // Number of training samples
     const int batch_size = num_samples; // Full batch training
     
@@ -31,8 +31,8 @@ int main() {
     Attention* attn = init_attention(feature_dim, seq_len, batch_size);
     
     // Training parameters
-    const int num_epochs = 20000;
-    const float learning_rate = 0.0003f;
+    const int num_epochs = 2000;
+    const float learning_rate = 0.001f;
     
     printf("Starting training...\n");
     printf("Architecture: d_model=%d, seq_len=%d, batch_size=%d\n\n", 
