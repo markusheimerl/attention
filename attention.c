@@ -181,7 +181,7 @@ float calculate_loss_attention(Attention* attn, float* y) {
     return loss / total_size;
 }
 
-// Zero gradients (only the accumulator buffers need zeroing)
+// Zero gradients
 void zero_gradients_attention(Attention* attn) {
     int weight_size = attn->d_model * attn->d_model;
     
