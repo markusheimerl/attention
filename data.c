@@ -9,19 +9,15 @@ void generate_attention_data(float** X, float** y, int num_samples, int seq_len,
     for (int sample = 0; sample < num_samples; sample++) {
         int base = sample * seq_len * feature_dim;
         
-        // Generate random input
-        for (int i = 0; i < seq_len * feature_dim; i++) {
-            (*X)[base + i] = -5.0f + ((float)rand() / (float)RAND_MAX) * 15.0f;
-        }
-        
-        // Find max row (max value in column 0)
+        // Generate random input and find max row
         int max_row = 0;
-        float max_val = (*X)[base];
-        for (int seq = 1; seq < seq_len; seq++) {
-            float val = (*X)[base + seq * feature_dim];
-            if (val > max_val) {
-                max_val = val;
-                max_row = seq;
+        float max_val = (*X)[base] = -5.0f + ((float)rand() / (float)RAND_MAX) * 15.0f;
+        
+        for (int i = 1; i < seq_len * feature_dim; i++) {
+            (*X)[base + i] = -5.0f + ((float)rand() / (float)RAND_MAX) * 15.0f;
+            if (i % feature_dim == 0 && (*X)[base + i] > max_val) {
+                max_val = (*X)[base + i];
+                max_row = i / feature_dim;
             }
         }
         
