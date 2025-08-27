@@ -8,49 +8,46 @@
 #include <cblas.h>
 
 typedef struct {
-    // Weights (query, key, value, output projection, residual connection)
-    float** Wq;  // [num_layers][input_size x head_dim]
-    float** Wk;  // [num_layers][input_size x head_dim]
-    float** Wv;  // [num_layers][input_size x head_dim]
-    float** Wo;  // [num_layers][head_dim   x output_size]
-    float** Wr;  // [num_layers][input_size x output_size] (residual)
-
+    // Weights
+    float** W_q;      // [num_layers][input_dim x head_dim]
+    float** W_k;      // [num_layers][input_dim x head_dim] 
+    float** W_v;      // [num_layers][input_dim x head_dim]
+    float** W_o;      // [num_layers][head_dim x output_dim]
+    
     // Gradients
-    float** Wq_grad;
-    float** Wk_grad;
-    float** Wv_grad;
-    float** Wo_grad;
-    float** Wr_grad;
-
+    float** W_q_grad; // [num_layers][input_dim x head_dim]
+    float** W_k_grad; // [num_layers][input_dim x head_dim]
+    float** W_v_grad; // [num_layers][input_dim x head_dim]
+    float** W_o_grad; // [num_layers][head_dim x output_dim]
+    
     // AdamW parameters
-    float** Wq_m; float** Wq_v;
-    float** Wk_m; float** Wk_v;
-    float** Wv_m; float** Wv_v;
-    float** Wo_m; float** Wo_v;
-    float** Wr_m; float** Wr_v;
-    float beta1;
-    float beta2;
-    float epsilon;
-    int t;
-    float weight_decay;
-
-    // Layer buffers
-    float** layer_Q;       // [num_layers][batch_size*seq_len*head_dim]
-    float** layer_K;       // [num_layers][batch_size*seq_len*head_dim]
-    float** layer_V;       // [num_layers][batch_size*seq_len*head_dim]
-    float** layer_scores;  // [num_layers][batch_size*seq_len*seq_len]
-    float** layer_attn;    // [num_layers][batch_size*seq_len*seq_len]
-    float** layer_O;       // [num_layers][batch_size*seq_len*head_dim]
-    float** layer_output;  // [num_layers][batch_size*seq_len*output_dim]
-
-    // Error buffers for backprop
-    float** error_output;  // [num_layers][batch_size*seq_len*output_dim]
-    float** error_O;       // [num_layers][batch_size*seq_len*head_dim]
-    float** error_Q;       // [num_layers][batch_size*seq_len*head_dim]
-    float** error_K;       // [num_layers][batch_size*seq_len*head_dim]
-    float** error_V;       // [num_layers][batch_size*seq_len*head_dim]
-    float** error_scores;  // [num_layers][batch_size*seq_len*seq_len]
-
+    float** W_q_m; float** W_q_v; // First and second moments for W_q
+    float** W_k_m; float** W_k_v; // First and second moments for W_k
+    float** W_v_m; float** W_v_v; // First and second moments for W_v
+    float** W_o_m; float** W_o_v; // First and second moments for W_o
+    float beta1;         // Exponential decay rate for first moment estimates
+    float beta2;         // Exponential decay rate for second moment estimates
+    float epsilon;       // Small constant for numerical stability
+    int t;               // Time step
+    float weight_decay;  // Weight decay parameter for AdamW
+    
+    // Layer outputs and working buffers
+    float** layer_Q;      // [num_layers][batch_size*seq_len x head_dim]
+    float** layer_K;      // [num_layers][batch_size*seq_len x head_dim]
+    float** layer_V;      // [num_layers][batch_size*seq_len x head_dim]
+    float** layer_scores; // [num_layers][batch_size*seq_len x seq_len]
+    float** layer_attn;   // [num_layers][batch_size*seq_len x seq_len]
+    float** layer_context;// [num_layers][batch_size*seq_len x head_dim]
+    float** layer_output; // [num_layers][batch_size*seq_len x output_dim]
+    
+    // Error buffers
+    float** error_output;  // [num_layers][batch_size*seq_len x output_dim]
+    float** error_context; // [num_layers][batch_size*seq_len x head_dim]
+    float** error_Q;       // [num_layers][batch_size*seq_len x head_dim]
+    float** error_K;       // [num_layers][batch_size*seq_len x head_dim]
+    float** error_V;       // [num_layers][batch_size*seq_len x head_dim]
+    float** error_scores;  // [num_layers][batch_size*seq_len x seq_len]
+    
     // Dimensions
     int input_dim;
     int head_dim;

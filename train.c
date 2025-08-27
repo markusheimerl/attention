@@ -12,16 +12,16 @@ int main() {
 
     // Parameters
     const int input_dim = 16;
-    const int head_dim = 128;
+    const int head_dim = 64;
     const int output_dim = 4;
     const int seq_len = 8;
     const int num_sequences = 128;
     const int num_layers = 2;
     const int batch_size = num_sequences;
 
-    // Generate synthetic sequence data
+    // Generate synthetic sequence data with temporal dependencies
     float *X, *y;
-    generate_data(&X, &y, num_sequences, seq_len, input_dim, output_dim, -3.0f, 3.0f, -2);
+    generate_data(&X, &y, num_sequences, seq_len, input_dim, output_dim, -3.0f, 3.0f, 3);
 
     // Initialize attention model
     Attention* attn = init_attention(input_dim, head_dim, output_dim, seq_len, batch_size, num_layers);
@@ -32,7 +32,7 @@ int main() {
 
     // Training loop
     for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
-        // Forward pass over full batch
+        // Forward pass
         forward_pass_attention(attn, X);
 
         // Calculate loss
@@ -43,7 +43,7 @@ int main() {
             printf("Epoch [%d/%d], Loss: %.8f\n", epoch, num_epochs, loss);
         }
 
-        // Don't update after final evaluation
+        // Don't update weights after final evaluation
         if (epoch == num_epochs) break;
 
         // Backward pass
@@ -110,13 +110,13 @@ int main() {
     }
 
     // Print sample predictions from first sequence
-    printf("\nSample Predictions (first sequence, first 10 time steps):\n");
+    printf("\nSample Predictions (first sequence, first 8 time steps):\n");
     printf("Time\tOutput\t\tPredicted\tActual\t\tDifference\n");
     printf("----------------------------------------------------------------\n");
 
     for (int i = 0; i < output_dim; i++) {
         printf("\ny%d:\n", i);
-        for (int t = 0; t < (seq_len < 10 ? seq_len : 10); t++) {
+        for (int t = 0; t < seq_len; t++) {
             int idx = 0 * seq_len * output_dim + t * output_dim + i; // sequence b=0
             float pred = loaded_attn->layer_output[last_layer][idx];
             float actual = y[idx];
