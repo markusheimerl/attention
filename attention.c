@@ -1,470 +1,433 @@
 #include "attention.h"
 
+// Softmax over rows of a square matrix (in-place on row pointer)
+static void softmax_row(float* row, int n) {
+    float maxv = row[0];
+    for (int i = 1; i < n; i++) if (row[i] > maxv) maxv = row[i];
+    float sum = 0.0f;
+    for (int i = 0; i < n; i++) {
+        row[i] = expf(row[i] - maxv);
+        sum += row[i];
+    }
+    float inv = 1.0f / (sum + 1e-12f);
+    for (int i = 0; i < n; i++) {
+        row[i] *= inv;
+    }
+}
+
 // Initialize the network with configurable dimensions
-Attention* init_attention(int input_dim, int hidden_dim, int output_dim, int seq_len, int batch_size, int num_layers) {
+Attention* init_attention(int input_dim, int head_dim, int output_dim, int seq_len, int batch_size, int num_layers) {
     Attention* attn = (Attention*)malloc(sizeof(Attention));
-    
+
     // Store dimensions
     attn->input_dim = input_dim;
-    attn->hidden_dim = hidden_dim;
+    attn->head_dim = head_dim;
     attn->output_dim = output_dim;
     attn->seq_len = seq_len;
     attn->batch_size = batch_size;
     attn->num_layers = num_layers;
-    
-    // Initialize AdamW parameters
+
+    // AdamW parameters
     attn->beta1 = 0.9f;
     attn->beta2 = 0.999f;
     attn->epsilon = 1e-8f;
     attn->t = 0;
     attn->weight_decay = 0.01f;
-    
-    // Allocate arrays of pointers
-    attn->W_q = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_k = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_v = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_o = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_r = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_q_grad = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_k_grad = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_v_grad = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_o_grad = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_r_grad = (float**)malloc(num_layers * sizeof(float*));
-    
-    // Allocate AdamW buffers
-    attn->W_q_m = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_q_v = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_k_m = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_k_v = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_v_m = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_v_v = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_o_m = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_o_v = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_r_m = (float**)malloc(num_layers * sizeof(float*));
-    attn->W_r_v = (float**)malloc(num_layers * sizeof(float*));
-    
-    // Allocate layer outputs and working buffers
-    attn->layer_q = (float**)malloc(num_layers * sizeof(float*));
-    attn->layer_k = (float**)malloc(num_layers * sizeof(float*));
-    attn->layer_v = (float**)malloc(num_layers * sizeof(float*));
-    attn->layer_scores = (float**)malloc(num_layers * sizeof(float*));
-    attn->layer_weights = (float**)malloc(num_layers * sizeof(float*));
-    attn->layer_context = (float**)malloc(num_layers * sizeof(float*));
-    attn->layer_preact = (float**)malloc(num_layers * sizeof(float*));
-    attn->layer_postact = (float**)malloc(num_layers * sizeof(float*));
-    attn->layer_output = (float**)malloc(num_layers * sizeof(float*));
-    attn->error_context = (float**)malloc(num_layers * sizeof(float*));
-    attn->error_weights = (float**)malloc(num_layers * sizeof(float*));
-    attn->error_values = (float**)malloc(num_layers * sizeof(float*));
-    attn->error_keys = (float**)malloc(num_layers * sizeof(float*));
-    attn->error_queries = (float**)malloc(num_layers * sizeof(float*));
-    attn->error_preact = (float**)malloc(num_layers * sizeof(float*));
-    attn->error_output = (float**)malloc(num_layers * sizeof(float*));
-    
-    for (int layer = 0; layer < num_layers; layer++) {
+
+    // Allocate pointer arrays
+    int L = num_layers;
+    attn->Wq = (float**)malloc(L * sizeof(float*));
+    attn->Wk = (float**)malloc(L * sizeof(float*));
+    attn->Wv = (float**)malloc(L * sizeof(float*));
+    attn->Wo = (float**)malloc(L * sizeof(float*));
+    attn->Wr = (float**)malloc(L * sizeof(float*));
+
+    attn->Wq_grad = (float**)malloc(L * sizeof(float*));
+    attn->Wk_grad = (float**)malloc(L * sizeof(float*));
+    attn->Wv_grad = (float**)malloc(L * sizeof(float*));
+    attn->Wo_grad = (float**)malloc(L * sizeof(float*));
+    attn->Wr_grad = (float**)malloc(L * sizeof(float*));
+
+    attn->Wq_m = (float**)malloc(L * sizeof(float*));
+    attn->Wq_v = (float**)malloc(L * sizeof(float*));
+    attn->Wk_m = (float**)malloc(L * sizeof(float*));
+    attn->Wk_v = (float**)malloc(L * sizeof(float*));
+    attn->Wv_m = (float**)malloc(L * sizeof(float*));
+    attn->Wv_v = (float**)malloc(L * sizeof(float*));
+    attn->Wo_m = (float**)malloc(L * sizeof(float*));
+    attn->Wo_v = (float**)malloc(L * sizeof(float*));
+    attn->Wr_m = (float**)malloc(L * sizeof(float*));
+    attn->Wr_v = (float**)malloc(L * sizeof(float*));
+
+    attn->layer_Q = (float**)malloc(L * sizeof(float*));
+    attn->layer_K = (float**)malloc(L * sizeof(float*));
+    attn->layer_V = (float**)malloc(L * sizeof(float*));
+    attn->layer_scores = (float**)malloc(L * sizeof(float*));
+    attn->layer_attn = (float**)malloc(L * sizeof(float*));
+    attn->layer_O = (float**)malloc(L * sizeof(float*));
+    attn->layer_output = (float**)malloc(L * sizeof(float*));
+
+    attn->error_output = (float**)malloc(L * sizeof(float*));
+    attn->error_O = (float**)malloc(L * sizeof(float*));
+    attn->error_Q = (float**)malloc(L * sizeof(float*));
+    attn->error_K = (float**)malloc(L * sizeof(float*));
+    attn->error_V = (float**)malloc(L * sizeof(float*));
+    attn->error_scores = (float**)malloc(L * sizeof(float*));
+
+    for (int layer = 0; layer < L; layer++) {
         int input_size = (layer == 0) ? input_dim : output_dim;
-        int output_size = (layer == num_layers - 1) ? output_dim : output_dim;
-        
-        int w_qkv_size = hidden_dim * input_size;
-        int w_o_size = output_size * hidden_dim;
-        int w_r_size = output_size * input_size;
-        
-        // Allocate and initialize matrices and gradients
-        attn->W_q[layer] = (float*)malloc(w_qkv_size * sizeof(float));
-        attn->W_k[layer] = (float*)malloc(w_qkv_size * sizeof(float));
-        attn->W_v[layer] = (float*)malloc(w_qkv_size * sizeof(float));
-        attn->W_o[layer] = (float*)malloc(w_o_size * sizeof(float));
-        attn->W_r[layer] = (float*)malloc(w_r_size * sizeof(float));
-        attn->W_q_grad[layer] = (float*)malloc(w_qkv_size * sizeof(float));
-        attn->W_k_grad[layer] = (float*)malloc(w_qkv_size * sizeof(float));
-        attn->W_v_grad[layer] = (float*)malloc(w_qkv_size * sizeof(float));
-        attn->W_o_grad[layer] = (float*)malloc(w_o_size * sizeof(float));
-        attn->W_r_grad[layer] = (float*)malloc(w_r_size * sizeof(float));
-        
-        // Allocate AdamW buffers
-        attn->W_q_m[layer] = (float*)calloc(w_qkv_size, sizeof(float));
-        attn->W_q_v[layer] = (float*)calloc(w_qkv_size, sizeof(float));
-        attn->W_k_m[layer] = (float*)calloc(w_qkv_size, sizeof(float));
-        attn->W_k_v[layer] = (float*)calloc(w_qkv_size, sizeof(float));
-        attn->W_v_m[layer] = (float*)calloc(w_qkv_size, sizeof(float));
-        attn->W_v_v[layer] = (float*)calloc(w_qkv_size, sizeof(float));
-        attn->W_o_m[layer] = (float*)calloc(w_o_size, sizeof(float));
-        attn->W_o_v[layer] = (float*)calloc(w_o_size, sizeof(float));
-        attn->W_r_m[layer] = (float*)calloc(w_r_size, sizeof(float));
-        attn->W_r_v[layer] = (float*)calloc(w_r_size, sizeof(float));
-        
-        // Allocate layer outputs and working buffers
-        int seq_batch_size = seq_len * batch_size;
-        attn->layer_q[layer] = (float*)malloc(seq_batch_size * hidden_dim * sizeof(float));
-        attn->layer_k[layer] = (float*)malloc(seq_batch_size * hidden_dim * sizeof(float));
-        attn->layer_v[layer] = (float*)malloc(seq_batch_size * hidden_dim * sizeof(float));
-        attn->layer_scores[layer] = (float*)malloc(seq_batch_size * seq_len * sizeof(float));
-        attn->layer_weights[layer] = (float*)malloc(seq_batch_size * seq_len * sizeof(float));
-        attn->layer_context[layer] = (float*)malloc(seq_batch_size * hidden_dim * sizeof(float));
-        attn->layer_preact[layer] = (float*)malloc(seq_batch_size * hidden_dim * sizeof(float));
-        attn->layer_postact[layer] = (float*)malloc(seq_batch_size * hidden_dim * sizeof(float));
-        attn->layer_output[layer] = (float*)malloc(seq_batch_size * output_size * sizeof(float));
-        attn->error_context[layer] = (float*)malloc(seq_batch_size * hidden_dim * sizeof(float));
-        attn->error_weights[layer] = (float*)malloc(seq_batch_size * seq_len * sizeof(float));
-        attn->error_values[layer] = (float*)malloc(seq_batch_size * hidden_dim * sizeof(float));
-        attn->error_keys[layer] = (float*)malloc(seq_batch_size * hidden_dim * sizeof(float));
-        attn->error_queries[layer] = (float*)malloc(seq_batch_size * hidden_dim * sizeof(float));
-        attn->error_preact[layer] = (float*)malloc(seq_batch_size * hidden_dim * sizeof(float));
-        attn->error_output[layer] = (float*)malloc(seq_batch_size * output_size * sizeof(float));
-        
-        // Initialize matrices
-        float scale_qkv = 1.0f / sqrtf(input_size);
-        float scale_o = 1.0f / sqrtf(hidden_dim);
-        float scale_r = 1.0f / sqrtf(input_size);
-        
-        for (int i = 0; i < w_qkv_size; i++) {
-            attn->W_q[layer][i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_qkv;
-            attn->W_k[layer][i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_qkv;
-            attn->W_v[layer][i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_qkv;
-        }
-        
-        for (int i = 0; i < w_o_size; i++) {
-            attn->W_o[layer][i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_o;
-        }
-        
-        for (int i = 0; i < w_r_size; i++) {
-            attn->W_r[layer][i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_r;
-        }
+        int output_size = output_dim; // consistent per layer
+
+        int Wq_size = input_size * head_dim;
+        int Wk_size = input_size * head_dim;
+        int Wv_size = input_size * head_dim;
+        int Wo_size = head_dim * output_size;
+        int Wr_size = input_size * output_size;
+
+        attn->Wq[layer] = (float*)malloc(Wq_size * sizeof(float));
+        attn->Wk[layer] = (float*)malloc(Wk_size * sizeof(float));
+        attn->Wv[layer] = (float*)malloc(Wv_size * sizeof(float));
+        attn->Wo[layer] = (float*)malloc(Wo_size * sizeof(float));
+        attn->Wr[layer] = (float*)malloc(Wr_size * sizeof(float));
+
+        attn->Wq_grad[layer] = (float*)malloc(Wq_size * sizeof(float));
+        attn->Wk_grad[layer] = (float*)malloc(Wk_size * sizeof(float));
+        attn->Wv_grad[layer] = (float*)malloc(Wv_size * sizeof(float));
+        attn->Wo_grad[layer] = (float*)malloc(Wo_size * sizeof(float));
+        attn->Wr_grad[layer] = (float*)malloc(Wr_size * sizeof(float));
+
+        attn->Wq_m[layer] = (float*)calloc(Wq_size, sizeof(float));
+        attn->Wq_v[layer] = (float*)calloc(Wq_size, sizeof(float));
+        attn->Wk_m[layer] = (float*)calloc(Wk_size, sizeof(float));
+        attn->Wk_v[layer] = (float*)calloc(Wk_size, sizeof(float));
+        attn->Wv_m[layer] = (float*)calloc(Wv_size, sizeof(float));
+        attn->Wv_v[layer] = (float*)calloc(Wv_size, sizeof(float));
+        attn->Wo_m[layer] = (float*)calloc(Wo_size, sizeof(float));
+        attn->Wo_v[layer] = (float*)calloc(Wo_size, sizeof(float));
+        attn->Wr_m[layer] = (float*)calloc(Wr_size, sizeof(float));
+        attn->Wr_v[layer] = (float*)calloc(Wr_size, sizeof(float));
+
+        // Buffers
+        attn->layer_Q[layer] = (float*)malloc(batch_size * seq_len * head_dim * sizeof(float));
+        attn->layer_K[layer] = (float*)malloc(batch_size * seq_len * head_dim * sizeof(float));
+        attn->layer_V[layer] = (float*)malloc(batch_size * seq_len * head_dim * sizeof(float));
+        attn->layer_scores[layer] = (float*)malloc(batch_size * seq_len * seq_len * sizeof(float));
+        attn->layer_attn[layer] = (float*)malloc(batch_size * seq_len * seq_len * sizeof(float));
+        attn->layer_O[layer] = (float*)malloc(batch_size * seq_len * head_dim * sizeof(float));
+        attn->layer_output[layer] = (float*)malloc(batch_size * seq_len * output_size * sizeof(float));
+
+        attn->error_output[layer] = (float*)malloc(batch_size * seq_len * output_size * sizeof(float));
+        attn->error_O[layer] = (float*)malloc(batch_size * seq_len * head_dim * sizeof(float));
+        attn->error_Q[layer] = (float*)malloc(batch_size * seq_len * head_dim * sizeof(float));
+        attn->error_K[layer] = (float*)malloc(batch_size * seq_len * head_dim * sizeof(float));
+        attn->error_V[layer] = (float*)malloc(batch_size * seq_len * head_dim * sizeof(float));
+        attn->error_scores[layer] = (float*)malloc(batch_size * seq_len * seq_len * sizeof(float));
+
+        // Initialize weights
+        float scale_in = 1.0f / sqrtf((float)input_size);
+        float scale_hd = 1.0f / sqrtf((float)head_dim);
+
+        for (int i = 0; i < Wq_size; i++) attn->Wq[layer][i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_in;
+        for (int i = 0; i < Wk_size; i++) attn->Wk[layer][i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_in;
+        for (int i = 0; i < Wv_size; i++) attn->Wv[layer][i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_in;
+        for (int i = 0; i < Wo_size; i++) attn->Wo[layer][i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_hd;
+        for (int i = 0; i < Wr_size; i++) attn->Wr[layer][i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_in;
     }
-    
+
     return attn;
 }
 
 // Free network memory
 void free_attention(Attention* attn) {
     for (int layer = 0; layer < attn->num_layers; layer++) {
-        free(attn->W_q[layer]); free(attn->W_k[layer]); free(attn->W_v[layer]); 
-        free(attn->W_o[layer]); free(attn->W_r[layer]);
-        free(attn->W_q_grad[layer]); free(attn->W_k_grad[layer]); free(attn->W_v_grad[layer]); 
-        free(attn->W_o_grad[layer]); free(attn->W_r_grad[layer]);
-        free(attn->W_q_m[layer]); free(attn->W_q_v[layer]);
-        free(attn->W_k_m[layer]); free(attn->W_k_v[layer]);
-        free(attn->W_v_m[layer]); free(attn->W_v_v[layer]);
-        free(attn->W_o_m[layer]); free(attn->W_o_v[layer]);
-        free(attn->W_r_m[layer]); free(attn->W_r_v[layer]);
-        free(attn->layer_q[layer]); free(attn->layer_k[layer]); free(attn->layer_v[layer]);
-        free(attn->layer_scores[layer]); free(attn->layer_weights[layer]); free(attn->layer_context[layer]);
-        free(attn->layer_preact[layer]); free(attn->layer_postact[layer]); free(attn->layer_output[layer]);
-        free(attn->error_context[layer]); free(attn->error_weights[layer]); free(attn->error_values[layer]);
-        free(attn->error_keys[layer]); free(attn->error_queries[layer]); free(attn->error_preact[layer]);
-        free(attn->error_output[layer]);
+        free(attn->Wq[layer]); free(attn->Wk[layer]); free(attn->Wv[layer]); free(attn->Wo[layer]); free(attn->Wr[layer]);
+        free(attn->Wq_grad[layer]); free(attn->Wk_grad[layer]); free(attn->Wv_grad[layer]); free(attn->Wo_grad[layer]); free(attn->Wr_grad[layer]);
+        free(attn->Wq_m[layer]); free(attn->Wq_v[layer]);
+        free(attn->Wk_m[layer]); free(attn->Wk_v[layer]);
+        free(attn->Wv_m[layer]); free(attn->Wv_v[layer]);
+        free(attn->Wo_m[layer]); free(attn->Wo_v[layer]);
+        free(attn->Wr_m[layer]); free(attn->Wr_v[layer]);
+
+        free(attn->layer_Q[layer]); free(attn->layer_K[layer]); free(attn->layer_V[layer]);
+        free(attn->layer_scores[layer]); free(attn->layer_attn[layer]); free(attn->layer_O[layer]);
+        free(attn->layer_output[layer]);
+
+        free(attn->error_output[layer]); free(attn->error_O[layer]);
+        free(attn->error_Q[layer]); free(attn->error_K[layer]); free(attn->error_V[layer]);
+        free(attn->error_scores[layer]);
     }
-    
-    free(attn->W_q); free(attn->W_k); free(attn->W_v); free(attn->W_o); free(attn->W_r);
-    free(attn->W_q_grad); free(attn->W_k_grad); free(attn->W_v_grad); free(attn->W_o_grad); free(attn->W_r_grad);
-    free(attn->W_q_m); free(attn->W_q_v); free(attn->W_k_m); free(attn->W_k_v); 
-    free(attn->W_v_m); free(attn->W_v_v); free(attn->W_o_m); free(attn->W_o_v);
-    free(attn->W_r_m); free(attn->W_r_v);
-    free(attn->layer_q); free(attn->layer_k); free(attn->layer_v);
-    free(attn->layer_scores); free(attn->layer_weights); free(attn->layer_context);
-    free(attn->layer_preact); free(attn->layer_postact); free(attn->layer_output);
-    free(attn->error_context); free(attn->error_weights); free(attn->error_values);
-    free(attn->error_keys); free(attn->error_queries); free(attn->error_preact); free(attn->error_output);
+    free(attn->Wq); free(attn->Wk); free(attn->Wv); free(attn->Wo); free(attn->Wr);
+    free(attn->Wq_grad); free(attn->Wk_grad); free(attn->Wv_grad); free(attn->Wo_grad); free(attn->Wr_grad);
+    free(attn->Wq_m); free(attn->Wq_v); free(attn->Wk_m); free(attn->Wk_v); free(attn->Wv_m); free(attn->Wv_v);
+    free(attn->Wo_m); free(attn->Wo_v); free(attn->Wr_m); free(attn->Wr_v);
+    free(attn->layer_Q); free(attn->layer_K); free(attn->layer_V);
+    free(attn->layer_scores); free(attn->layer_attn); free(attn->layer_O); free(attn->layer_output);
+    free(attn->error_output); free(attn->error_O); free(attn->error_Q); free(attn->error_K); free(attn->error_V); free(attn->error_scores);
     free(attn);
 }
 
-// Forward pass
+// Forward pass (single-head, bidirectional attention within each sequence, no mask)
 void forward_pass_attention(Attention* attn, float* X) {
-    float* input = X;
-    int seq_batch_size = attn->seq_len * attn->batch_size;
-    
+    int B = attn->batch_size;
+    int T = attn->seq_len;
+    int Din = attn->input_dim;
+    int Dhd = attn->head_dim;
+    int Dout = attn->output_dim;
+
+    // Per layer
     for (int layer = 0; layer < attn->num_layers; layer++) {
-        int input_size = (layer == 0) ? attn->input_dim : attn->output_dim;
-        int output_size = (layer == attn->num_layers - 1) ? attn->output_dim : attn->output_dim;
-        
-        // Q = XW_q, K = XW_k, V = XW_v
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                    seq_batch_size, attn->hidden_dim, input_size,
-                    1.0f, input, input_size,
-                    attn->W_q[layer], attn->hidden_dim,
-                    0.0f, attn->layer_q[layer], attn->hidden_dim);
-        
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                    seq_batch_size, attn->hidden_dim, input_size,
-                    1.0f, input, input_size,
-                    attn->W_k[layer], attn->hidden_dim,
-                    0.0f, attn->layer_k[layer], attn->hidden_dim);
-        
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                    seq_batch_size, attn->hidden_dim, input_size,
-                    1.0f, input, input_size,
-                    attn->W_v[layer], attn->hidden_dim,
-                    0.0f, attn->layer_v[layer], attn->hidden_dim);
-        
-        // Compute attention scores for each batch
-        float scale = 1.0f / sqrtf(attn->hidden_dim);
-        for (int b = 0; b < attn->batch_size; b++) {
-            float* Q_b = attn->layer_q[layer] + b * attn->seq_len * attn->hidden_dim;
-            float* K_b = attn->layer_k[layer] + b * attn->seq_len * attn->hidden_dim;
-            float* scores_b = attn->layer_scores[layer] + b * attn->seq_len * attn->seq_len;
-            
-            // Scores = QK^T / sqrt(d_k)
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                        attn->seq_len, attn->seq_len, attn->hidden_dim,
-                        scale, Q_b, attn->hidden_dim,
-                        K_b, attn->hidden_dim,
-                        0.0f, scores_b, attn->seq_len);
-        }
-        
-        // Apply softmax to attention scores
-        for (int b = 0; b < attn->batch_size; b++) {
-            for (int i = 0; i < attn->seq_len; i++) {
-                float* scores_row = attn->layer_scores[layer] + b * attn->seq_len * attn->seq_len + i * attn->seq_len;
-                float* weights_row = attn->layer_weights[layer] + b * attn->seq_len * attn->seq_len + i * attn->seq_len;
-                
-                // Find max for numerical stability
-                float max_score = scores_row[0];
-                for (int j = 1; j < attn->seq_len; j++) {
-                    if (scores_row[j] > max_score) max_score = scores_row[j];
-                }
-                
-                // Compute softmax
-                float sum_exp = 0.0f;
-                for (int j = 0; j < attn->seq_len; j++) {
-                    weights_row[j] = expf(scores_row[j] - max_score);
-                    sum_exp += weights_row[j];
-                }
-                
-                for (int j = 0; j < attn->seq_len; j++) {
-                    weights_row[j] /= sum_exp;
-                }
-            }
-        }
-        
-        // Compute context vectors for each batch
-        for (int b = 0; b < attn->batch_size; b++) {
-            float* weights_b = attn->layer_weights[layer] + b * attn->seq_len * attn->seq_len;
-            float* V_b = attn->layer_v[layer] + b * attn->seq_len * attn->hidden_dim;
-            float* context_b = attn->layer_context[layer] + b * attn->seq_len * attn->hidden_dim;
-            
-            // Context = Attention_weights * V
+        int input_size = (layer == 0) ? Din : Dout;
+        int output_size = Dout;
+
+        for (int b = 0; b < B; b++) {
+            // Pointers for this batch
+            float* Xb = (layer == 0)
+                ? (X + b * T * input_size)
+                : (&attn->layer_output[layer - 1][b * T * output_size]);
+
+            float* Qb = &attn->layer_Q[layer][b * T * Dhd];
+            float* Kb = &attn->layer_K[layer][b * T * Dhd];
+            float* Vb = &attn->layer_V[layer][b * T * Dhd];
+            float* Sb = &attn->layer_scores[layer][b * T * T];
+            float* Ab = &attn->layer_attn[layer][b * T * T];
+            float* Ob = &attn->layer_O[layer][b * T * Dhd];
+            float* Yb = &attn->layer_output[layer][b * T * output_size];
+
+            // Q = X Wq
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                        attn->seq_len, attn->hidden_dim, attn->seq_len,
-                        1.0f, weights_b, attn->seq_len,
-                        V_b, attn->hidden_dim,
-                        0.0f, context_b, attn->hidden_dim);
-        }
-        
-        // H = Context (pre-activation for swish)
-        memcpy(attn->layer_preact[layer], attn->layer_context[layer], 
-               seq_batch_size * attn->hidden_dim * sizeof(float));
-        
-        // S = Hσ(H) (swish activation)
-        for (int i = 0; i < seq_batch_size * attn->hidden_dim; i++) {
-            attn->layer_postact[layer][i] = attn->layer_preact[layer][i] / (1.0f + expf(-attn->layer_preact[layer][i]));
-        }
-        
-        // Y = SW_o
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                    seq_batch_size, output_size, attn->hidden_dim,
-                    1.0f, attn->layer_postact[layer], attn->hidden_dim,
-                    attn->W_o[layer], output_size,
-                    0.0f, attn->layer_output[layer], output_size);
-        
-        // Y = Y + XW_r (residual connection)
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                    seq_batch_size, output_size, input_size,
-                    1.0f, input, input_size,
-                    attn->W_r[layer], output_size,
-                    1.0f, attn->layer_output[layer], output_size);
-        
-        // Set input for next layer
-        if (layer < attn->num_layers - 1) {
-            input = attn->layer_output[layer];
+                        T, Dhd, input_size,
+                        1.0f, Xb, input_size,
+                        attn->Wq[layer], Dhd,
+                        0.0f, Qb, Dhd);
+
+            // K = X Wk
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                        T, Dhd, input_size,
+                        1.0f, Xb, input_size,
+                        attn->Wk[layer], Dhd,
+                        0.0f, Kb, Dhd);
+
+            // V = X Wv
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                        T, Dhd, input_size,
+                        1.0f, Xb, input_size,
+                        attn->Wv[layer], Dhd,
+                        0.0f, Vb, Dhd);
+
+            // Scores = (Q K^T) / sqrt(Dhd)
+            float scale = 1.0f / sqrtf((float)Dhd);
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                        T, T, Dhd,
+                        scale, Qb, Dhd,
+                        Kb, Dhd,
+                        0.0f, Sb, T);
+
+            // Attn = softmax(scores) row-wise
+            for (int i = 0; i < T; i++) {
+                softmax_row(&Sb[i * T], T);
+            }
+            // Store to Ab
+            memcpy(Ab, Sb, T * T * sizeof(float));
+
+            // O = Attn V
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                        T, Dhd, T,
+                        1.0f, Ab, T,
+                        Vb, Dhd,
+                        0.0f, Ob, Dhd);
+
+            // Y = O Wo + X Wr
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                        T, output_size, Dhd,
+                        1.0f, Ob, Dhd,
+                        attn->Wo[layer], output_size,
+                        0.0f, Yb, output_size);
+
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                        T, output_size, input_size,
+                        1.0f, Xb, input_size,
+                        attn->Wr[layer], output_size,
+                        1.0f, Yb, output_size);
         }
     }
 }
 
-// Calculate loss
+// Calculate loss (MSE) and fill error_output at last layer
 float calculate_loss_attention(Attention* attn, float* y) {
-    // ∂L/∂Y = Y - Y_true
-    int last_layer = attn->num_layers - 1;
+    int last = attn->num_layers - 1;
+    int total = attn->batch_size * attn->seq_len * attn->output_dim;
     float loss = 0.0f;
-    int seq_batch_size = attn->seq_len * attn->batch_size;
-    
-    for (int i = 0; i < seq_batch_size * attn->output_dim; i++) {
-        attn->error_output[last_layer][i] = attn->layer_output[last_layer][i] - y[i];
-        loss += attn->error_output[last_layer][i] * attn->error_output[last_layer][i];
+
+    for (int i = 0; i < total; i++) {
+        float diff = attn->layer_output[last][i] - y[i];
+        attn->error_output[last][i] = diff;
+        loss += diff * diff;
     }
-    return loss / (seq_batch_size * attn->output_dim);
+    return loss / (float)total;
 }
 
 // Zero gradients
 void zero_gradients_attention(Attention* attn) {
     for (int layer = 0; layer < attn->num_layers; layer++) {
         int input_size = (layer == 0) ? attn->input_dim : attn->output_dim;
-        int output_size = (layer == attn->num_layers - 1) ? attn->output_dim : attn->output_dim;
-        
-        int w_qkv_size = attn->hidden_dim * input_size;
-        int w_o_size = output_size * attn->hidden_dim;
-        int w_r_size = output_size * input_size;
-        
-        memset(attn->W_q_grad[layer], 0, w_qkv_size * sizeof(float));
-        memset(attn->W_k_grad[layer], 0, w_qkv_size * sizeof(float));
-        memset(attn->W_v_grad[layer], 0, w_qkv_size * sizeof(float));
-        memset(attn->W_o_grad[layer], 0, w_o_size * sizeof(float));
-        memset(attn->W_r_grad[layer], 0, w_r_size * sizeof(float));
+        int output_size = attn->output_dim;
+        int Wq_size = input_size * attn->head_dim;
+        int Wk_size = input_size * attn->head_dim;
+        int Wv_size = input_size * attn->head_dim;
+        int Wo_size = attn->head_dim * output_size;
+        int Wr_size = input_size * output_size;
+
+        memset(attn->Wq_grad[layer], 0, Wq_size * sizeof(float));
+        memset(attn->Wk_grad[layer], 0, Wk_size * sizeof(float));
+        memset(attn->Wv_grad[layer], 0, Wv_size * sizeof(float));
+        memset(attn->Wo_grad[layer], 0, Wo_size * sizeof(float));
+        memset(attn->Wr_grad[layer], 0, Wr_size * sizeof(float));
     }
 }
 
 // Backward pass
 void backward_pass_attention(Attention* attn, float* X) {
-    int seq_batch_size = attn->seq_len * attn->batch_size;
-    
+    int B = attn->batch_size;
+    int T = attn->seq_len;
+    int Din = attn->input_dim;
+    int Dhd = attn->head_dim;
+    int Dout = attn->output_dim;
+
     for (int layer = attn->num_layers - 1; layer >= 0; layer--) {
-        float* input = (layer == 0) ? X : attn->layer_output[layer - 1];
-        int input_size = (layer == 0) ? attn->input_dim : attn->output_dim;
-        int output_size = (layer == attn->num_layers - 1) ? attn->output_dim : attn->output_dim;
-        
-        // ∂L/∂W_o = S^T(∂L/∂Y)
-        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                    attn->hidden_dim, output_size, seq_batch_size,
-                    1.0f, attn->layer_postact[layer], attn->hidden_dim,
-                    attn->error_output[layer], output_size,
-                    1.0f, attn->W_o_grad[layer], output_size);
-        
-        // ∂L/∂W_r = X^T(∂L/∂Y)
-        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                    input_size, output_size, seq_batch_size,
-                    1.0f, input, input_size,
-                    attn->error_output[layer], output_size,
-                    1.0f, attn->W_r_grad[layer], output_size);
-        
-        // ∂L/∂S = (∂L/∂Y)(W_o)^T
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                    seq_batch_size, attn->hidden_dim, output_size,
-                    1.0f, attn->error_output[layer], output_size,
-                    attn->W_o[layer], output_size,
-                    0.0f, attn->error_preact[layer], attn->hidden_dim);
-        
-        // ∂L/∂H = ∂L/∂S ⊙ [σ(H) + Hσ(H)(1-σ(H))] (swish derivative)
-        for (int i = 0; i < seq_batch_size * attn->hidden_dim; i++) {
-            float h = attn->layer_preact[layer][i];
-            float sigmoid = 1.0f / (1.0f + expf(-h));
-            attn->error_context[layer][i] = attn->error_preact[layer][i] * (sigmoid + h * sigmoid * (1.0f - sigmoid));
-        }
-        
-        // Backpropagate through attention mechanism for each batch
-        memset(attn->error_values[layer], 0, seq_batch_size * attn->hidden_dim * sizeof(float));
-        memset(attn->error_weights[layer], 0, seq_batch_size * attn->seq_len * sizeof(float));
-        
-        for (int b = 0; b < attn->batch_size; b++) {
-            float* error_context_b = attn->error_context[layer] + b * attn->seq_len * attn->hidden_dim;
-            float* error_weights_b = attn->error_weights[layer] + b * attn->seq_len * attn->seq_len;
-            float* error_values_b = attn->error_values[layer] + b * attn->seq_len * attn->hidden_dim;
-            float* weights_b = attn->layer_weights[layer] + b * attn->seq_len * attn->seq_len;
-            float* values_b = attn->layer_v[layer] + b * attn->seq_len * attn->hidden_dim;
-            
-            // ∂L/∂Weights = ∂L/∂Context * V^T
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                        attn->seq_len, attn->seq_len, attn->hidden_dim,
-                        1.0f, error_context_b, attn->hidden_dim,
-                        values_b, attn->hidden_dim,
-                        0.0f, error_weights_b, attn->seq_len);
-            
-            // ∂L/∂V = Weights^T * ∂L/∂Context
+        int input_size = (layer == 0) ? Din : Dout;
+        int output_size = Dout;
+
+        for (int b = 0; b < B; b++) {
+            // Pointers
+            float* Xb = (layer == 0)
+                ? (X + b * T * input_size)
+                : (&attn->layer_output[layer - 1][b * T * input_size]);
+
+            float* Qb = &attn->layer_Q[layer][b * T * Dhd];
+            float* Kb = &attn->layer_K[layer][b * T * Dhd];
+            float* Vb = &attn->layer_V[layer][b * T * Dhd];
+            float* Ab = &attn->layer_attn[layer][b * T * T];
+            float* Ob = &attn->layer_O[layer][b * T * Dhd];
+            float* dY = &attn->error_output[layer][b * T * output_size];
+
+            float* dOb = &attn->error_O[layer][b * T * Dhd];
+            float* dQb = &attn->error_Q[layer][b * T * Dhd];
+            float* dKb = &attn->error_K[layer][b * T * Dhd];
+            float* dVb = &attn->error_V[layer][b * T * Dhd];
+            float* dSb = &attn->error_scores[layer][b * T * T];
+
+            float* Yprev_grad = (layer > 0) ? (&attn->error_output[layer - 1][b * T * input_size]) : NULL;
+
+            // Gradients for Wo: dWo += O^T dY
             cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                        attn->seq_len, attn->hidden_dim, attn->seq_len,
-                        1.0f, weights_b, attn->seq_len,
-                        error_context_b, attn->hidden_dim,
-                        0.0f, error_values_b, attn->hidden_dim);
-        }
-        
-        // Backpropagate through softmax
-        memset(attn->error_queries[layer], 0, seq_batch_size * attn->hidden_dim * sizeof(float));
-        memset(attn->error_keys[layer], 0, seq_batch_size * attn->hidden_dim * sizeof(float));
-        
-        float scale = 1.0f / sqrtf(attn->hidden_dim);
-        for (int b = 0; b < attn->batch_size; b++) {
-            float* error_weights_b = attn->error_weights[layer] + b * attn->seq_len * attn->seq_len;
-            float* weights_b = attn->layer_weights[layer] + b * attn->seq_len * attn->seq_len;
-            float* queries_b = attn->layer_q[layer] + b * attn->seq_len * attn->hidden_dim;
-            float* keys_b = attn->layer_k[layer] + b * attn->seq_len * attn->hidden_dim;
-            float* error_queries_b = attn->error_queries[layer] + b * attn->seq_len * attn->hidden_dim;
-            float* error_keys_b = attn->error_keys[layer] + b * attn->seq_len * attn->hidden_dim;
-            
-            // Softmax gradient: ∂L/∂scores[i,j] = weights[i,j] * (error_weights[i,j] - sum_k(error_weights[i,k] * weights[i,k]))
-            float* error_scores_b = (float*)malloc(attn->seq_len * attn->seq_len * sizeof(float));
-            for (int i = 0; i < attn->seq_len; i++) {
-                float sum_term = 0.0f;
-                for (int k = 0; k < attn->seq_len; k++) {
-                    sum_term += error_weights_b[i * attn->seq_len + k] * weights_b[i * attn->seq_len + k];
-                }
-                for (int j = 0; j < attn->seq_len; j++) {
-                    error_scores_b[i * attn->seq_len + j] = weights_b[i * attn->seq_len + j] * 
-                        (error_weights_b[i * attn->seq_len + j] - sum_term);
+                        Dhd, output_size, T,
+                        1.0f, Ob, Dhd,
+                        dY, output_size,
+                        1.0f, attn->Wo_grad[layer], output_size);
+
+            // dO = dY Wo^T
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                        T, Dhd, output_size,
+                        1.0f, dY, output_size,
+                        attn->Wo[layer], output_size,
+                        0.0f, dOb, Dhd);
+
+            // Gradients for Wr: dWr += X^T dY
+            cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                        input_size, output_size, T,
+                        1.0f, Xb, input_size,
+                        dY, output_size,
+                        1.0f, attn->Wr_grad[layer], output_size);
+
+            // dX from residual path: dX_res = dY Wr^T
+            if (layer > 0) {
+                cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                            T, input_size, output_size,
+                            1.0f, dY, output_size,
+                            attn->Wr[layer], output_size,
+                            0.0f, Yprev_grad, input_size);
+            }
+
+            // dV = A^T dO
+            cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                        T, Dhd, T,
+                        1.0f, Ab, T,
+                        dOb, Dhd,
+                        0.0f, dVb, Dhd);
+
+            // dA = dO V^T  (store in dSb temporarily)
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                        T, T, Dhd,
+                        1.0f, dOb, Dhd,
+                        Vb, Dhd,
+                        0.0f, dSb, T);
+
+            // Convert dA to dScores via softmax Jacobian: dZ_j = s_j * (g_j - sum_k g_k s_k)
+            for (int i = 0; i < T; i++) {
+                float* g = &dSb[i * T];
+                float* s = &Ab[i * T];
+                float dot = 0.0f;
+                for (int j = 0; j < T; j++) dot += g[j] * s[j];
+                for (int j = 0; j < T; j++) {
+                    g[j] = s[j] * (g[j] - dot); // now g is dScores row
                 }
             }
-            
-            // ∂L/∂Q = ∂L/∂scores * K * scale
+
+            // dQ = dScores K / sqrt(d)
+            float scale = 1.0f / sqrtf((float)Dhd);
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                        attn->seq_len, attn->hidden_dim, attn->seq_len,
-                        scale, error_scores_b, attn->seq_len,
-                        keys_b, attn->hidden_dim,
-                        0.0f, error_queries_b, attn->hidden_dim);
-            
-            // ∂L/∂K = ∂L/∂scores^T * Q * scale
+                        T, Dhd, T,
+                        scale, dSb, T,
+                        Kb, Dhd,
+                        0.0f, dQb, Dhd);
+
+            // dK = dScores^T Q / sqrt(d)
             cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                        attn->seq_len, attn->hidden_dim, attn->seq_len,
-                        scale, error_scores_b, attn->seq_len,
-                        queries_b, attn->hidden_dim,
-                        0.0f, error_keys_b, attn->hidden_dim);
-            
-            free(error_scores_b);
-        }
-        
-        // ∂L/∂W_q = X^T(∂L/∂Q)
-        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                    input_size, attn->hidden_dim, seq_batch_size,
-                    1.0f, input, input_size,
-                    attn->error_queries[layer], attn->hidden_dim,
-                    1.0f, attn->W_q_grad[layer], attn->hidden_dim);
-        
-        // ∂L/∂W_k = X^T(∂L/∂K)
-        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                    input_size, attn->hidden_dim, seq_batch_size,
-                    1.0f, input, input_size,
-                    attn->error_keys[layer], attn->hidden_dim,
-                    1.0f, attn->W_k_grad[layer], attn->hidden_dim);
-        
-        // ∂L/∂W_v = X^T(∂L/∂V)
-        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                    input_size, attn->hidden_dim, seq_batch_size,
-                    1.0f, input, input_size,
-                    attn->error_values[layer], attn->hidden_dim,
-                    1.0f, attn->W_v_grad[layer], attn->hidden_dim);
-        
-        // Propagate error to previous layer
-        if (layer > 0) {
-            // ∂L/∂X = (∂L/∂Q)(W_q)^T + (∂L/∂K)(W_k)^T + (∂L/∂V)(W_v)^T + (∂L/∂Y)(W_r)^T
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                        seq_batch_size, input_size, attn->hidden_dim,
-                        1.0f, attn->error_queries[layer], attn->hidden_dim,
-                        attn->W_q[layer], attn->hidden_dim,
-                        0.0f, attn->error_output[layer - 1], input_size);
-            
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                        seq_batch_size, input_size, attn->hidden_dim,
-                        1.0f, attn->error_keys[layer], attn->hidden_dim,
-                        attn->W_k[layer], attn->hidden_dim,
-                        1.0f, attn->error_output[layer - 1], input_size);
-            
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                        seq_batch_size, input_size, attn->hidden_dim,
-                        1.0f, attn->error_values[layer], attn->hidden_dim,
-                        attn->W_v[layer], attn->hidden_dim,
-                        1.0f, attn->error_output[layer - 1], input_size);
-            
-            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                        seq_batch_size, input_size, output_size,
-                        1.0f, attn->error_output[layer], output_size,
-                        attn->W_r[layer], output_size,
-                        1.0f, attn->error_output[layer - 1], input_size);
+                        T, Dhd, T,
+                        scale, dSb, T,
+                        Qb, Dhd,
+                        0.0f, dKb, Dhd);
+
+            // Accumulate weight gradients for Wq, Wk, Wv
+            cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                        input_size, Dhd, T,
+                        1.0f, Xb, input_size,
+                        dQb, Dhd,
+                        1.0f, attn->Wq_grad[layer], Dhd);
+
+            cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                        input_size, Dhd, T,
+                        1.0f, Xb, input_size,
+                        dKb, Dhd,
+                        1.0f, attn->Wk_grad[layer], Dhd);
+
+            cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                        input_size, Dhd, T,
+                        1.0f, Xb, input_size,
+                        dVb, Dhd,
+                        1.0f, attn->Wv_grad[layer], Dhd);
+
+            // Backprop to previous layer input: accumulate into Yprev_grad
+            if (layer > 0) {
+                // Yprev_grad already has dY * Wr^T; now add from Q/K/V paths
+                cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                            T, input_size, Dhd,
+                            1.0f, dQb, Dhd,
+                            attn->Wq[layer], Dhd,
+                            1.0f, Yprev_grad, input_size);
+
+                cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                            T, input_size, Dhd,
+                            1.0f, dKb, Dhd,
+                            attn->Wk[layer], Dhd,
+                            1.0f, Yprev_grad, input_size);
+
+                cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                            T, input_size, Dhd,
+                            1.0f, dVb, Dhd,
+                            attn->Wv[layer], Dhd,
+                            1.0f, Yprev_grad, input_size);
+            }
         }
     }
 }
@@ -472,198 +435,170 @@ void backward_pass_attention(Attention* attn, float* X) {
 // Update weights using AdamW
 void update_weights_attention(Attention* attn, float learning_rate) {
     attn->t++;
-    int total_samples = attn->seq_len * attn->batch_size;
-    
+    int total_samples = attn->batch_size * attn->seq_len;
+
     float beta1_t = powf(attn->beta1, attn->t);
     float beta2_t = powf(attn->beta2, attn->t);
     float alpha_t = learning_rate * sqrtf(1.0f - beta2_t) / (1.0f - beta1_t);
-    
+
     for (int layer = 0; layer < attn->num_layers; layer++) {
         int input_size = (layer == 0) ? attn->input_dim : attn->output_dim;
-        int output_size = (layer == attn->num_layers - 1) ? attn->output_dim : attn->output_dim;
-        
-        int w_qkv_size = attn->hidden_dim * input_size;
-        int w_o_size = output_size * attn->hidden_dim;
-        int w_r_size = output_size * input_size;
-        
-        // Update W_q weights
-        for (int i = 0; i < w_qkv_size; i++) {
-            float grad = attn->W_q_grad[layer][i] / total_samples;
-            
-            attn->W_q_m[layer][i] = attn->beta1 * attn->W_q_m[layer][i] + (1.0f - attn->beta1) * grad;
-            attn->W_q_v[layer][i] = attn->beta2 * attn->W_q_v[layer][i] + (1.0f - attn->beta2) * grad * grad;
-            
-            float update = alpha_t * attn->W_q_m[layer][i] / (sqrtf(attn->W_q_v[layer][i]) + attn->epsilon);
-            attn->W_q[layer][i] = attn->W_q[layer][i] * (1.0f - learning_rate * attn->weight_decay) - update;
-        }
-        
-        // Update W_k weights
-        for (int i = 0; i < w_qkv_size; i++) {
-            float grad = attn->W_k_grad[layer][i] / total_samples;
-            
-            attn->W_k_m[layer][i] = attn->beta1 * attn->W_k_m[layer][i] + (1.0f - attn->beta1) * grad;
-            attn->W_k_v[layer][i] = attn->beta2 * attn->W_k_v[layer][i] + (1.0f - attn->beta2) * grad * grad;
-            
-            float update = alpha_t * attn->W_k_m[layer][i] / (sqrtf(attn->W_k_v[layer][i]) + attn->epsilon);
-            attn->W_k[layer][i] = attn->W_k[layer][i] * (1.0f - learning_rate * attn->weight_decay) - update;
-        }
-        
-        // Update W_v weights
-        for (int i = 0; i < w_qkv_size; i++) {
-            float grad = attn->W_v_grad[layer][i] / total_samples;
-            
-            attn->W_v_m[layer][i] = attn->beta1 * attn->W_v_m[layer][i] + (1.0f - attn->beta1) * grad;
-            attn->W_v_v[layer][i] = attn->beta2 * attn->W_v_v[layer][i] + (1.0f - attn->beta2) * grad * grad;
-            
-            float update = alpha_t * attn->W_v_m[layer][i] / (sqrtf(attn->W_v_v[layer][i]) + attn->epsilon);
-            attn->W_v[layer][i] = attn->W_v[layer][i] * (1.0f - learning_rate * attn->weight_decay) - update;
-        }
-        
-        // Update W_o weights
-        for (int i = 0; i < w_o_size; i++) {
-            float grad = attn->W_o_grad[layer][i] / total_samples;
-            
-            attn->W_o_m[layer][i] = attn->beta1 * attn->W_o_m[layer][i] + (1.0f - attn->beta1) * grad;
-            attn->W_o_v[layer][i] = attn->beta2 * attn->W_o_v[layer][i] + (1.0f - attn->beta2) * grad * grad;
-            
-            float update = alpha_t * attn->W_o_m[layer][i] / (sqrtf(attn->W_o_v[layer][i]) + attn->epsilon);
-            attn->W_o[layer][i] = attn->W_o[layer][i] * (1.0f - learning_rate * attn->weight_decay) - update;
-        }
-        
-        // Update W_r weights
-        for (int i = 0; i < w_r_size; i++) {
-            float grad = attn->W_r_grad[layer][i] / total_samples;
-            
-            attn->W_r_m[layer][i] = attn->beta1 * attn->W_r_m[layer][i] + (1.0f - attn->beta1) * grad;
-            attn->W_r_v[layer][i] = attn->beta2 * attn->W_r_v[layer][i] + (1.0f - attn->beta2) * grad * grad;
-            
-            float update = alpha_t * attn->W_r_m[layer][i] / (sqrtf(attn->W_r_v[layer][i]) + attn->epsilon);
-            attn->W_r[layer][i] = attn->W_r[layer][i] * (1.0f - learning_rate * attn->weight_decay) - update;
+        int output_size = attn->output_dim;
+        int Wq_size = input_size * attn->head_dim;
+        int Wk_size = input_size * attn->head_dim;
+        int Wv_size = input_size * attn->head_dim;
+        int Wo_size = attn->head_dim * output_size;
+        int Wr_size = input_size * output_size;
+
+        float* Ws[5] = { attn->Wq[layer], attn->Wk[layer], attn->Wv[layer], attn->Wo[layer], attn->Wr[layer] };
+        float* Gs[5] = { attn->Wq_grad[layer], attn->Wk_grad[layer], attn->Wv_grad[layer], attn->Wo_grad[layer], attn->Wr_grad[layer] };
+        float* Ms[5] = { attn->Wq_m[layer], attn->Wk_m[layer], attn->Wv_m[layer], attn->Wo_m[layer], attn->Wr_m[layer] };
+        float* Vs[5] = { attn->Wq_v[layer], attn->Wk_v[layer], attn->Wv_v[layer], attn->Wo_v[layer], attn->Wr_v[layer] };
+        int sizes[5] = { Wq_size, Wk_size, Wv_size, Wo_size, Wr_size };
+
+        for (int s = 0; s < 5; s++) {
+            float* W = Ws[s];
+            float* G = Gs[s];
+            float* M = Ms[s];
+            float* V = Vs[s];
+            int n = sizes[s];
+
+            for (int i = 0; i < n; i++) {
+                float g = G[i] / (float)total_samples;
+                M[i] = attn->beta1 * M[i] + (1.0f - attn->beta1) * g;
+                V[i] = attn->beta2 * V[i] + (1.0f - attn->beta2) * g * g;
+                float update = alpha_t * M[i] / (sqrtf(V[i]) + attn->epsilon);
+                W[i] = W[i] * (1.0f - learning_rate * attn->weight_decay) - update;
+            }
         }
     }
 }
 
-// Save model weights and AdamW state to binary file
+// Save model weights and Adam state to binary file
 void save_attention(Attention* attn, const char* filename) {
     FILE* file = fopen(filename, "wb");
     if (!file) {
         printf("Error opening file for writing: %s\n", filename);
         return;
     }
-    
+
     // Save dimensions
     fwrite(&attn->input_dim, sizeof(int), 1, file);
-    fwrite(&attn->hidden_dim, sizeof(int), 1, file);
+    fwrite(&attn->head_dim, sizeof(int), 1, file);
     fwrite(&attn->output_dim, sizeof(int), 1, file);
     fwrite(&attn->seq_len, sizeof(int), 1, file);
     fwrite(&attn->batch_size, sizeof(int), 1, file);
     fwrite(&attn->num_layers, sizeof(int), 1, file);
-    
-    // Save weights for each layer
+
+    // Save weights
     for (int layer = 0; layer < attn->num_layers; layer++) {
         int input_size = (layer == 0) ? attn->input_dim : attn->output_dim;
-        int output_size = (layer == attn->num_layers - 1) ? attn->output_dim : attn->output_dim;
-        
-        int w_qkv_size = attn->hidden_dim * input_size;
-        int w_o_size = output_size * attn->hidden_dim;
-        int w_r_size = output_size * input_size;
-        
-        fwrite(attn->W_q[layer], sizeof(float), w_qkv_size, file);
-        fwrite(attn->W_k[layer], sizeof(float), w_qkv_size, file);
-        fwrite(attn->W_v[layer], sizeof(float), w_qkv_size, file);
-        fwrite(attn->W_o[layer], sizeof(float), w_o_size, file);
-        fwrite(attn->W_r[layer], sizeof(float), w_r_size, file);
+        int output_size = attn->output_dim;
+
+        int Wq_size = input_size * attn->head_dim;
+        int Wk_size = input_size * attn->head_dim;
+        int Wv_size = input_size * attn->head_dim;
+        int Wo_size = attn->head_dim * output_size;
+        int Wr_size = input_size * output_size;
+
+        fwrite(attn->Wq[layer], sizeof(float), Wq_size, file);
+        fwrite(attn->Wk[layer], sizeof(float), Wk_size, file);
+        fwrite(attn->Wv[layer], sizeof(float), Wv_size, file);
+        fwrite(attn->Wo[layer], sizeof(float), Wo_size, file);
+        fwrite(attn->Wr[layer], sizeof(float), Wr_size, file);
     }
-    
+
     // Save AdamW state
     fwrite(&attn->t, sizeof(int), 1, file);
     for (int layer = 0; layer < attn->num_layers; layer++) {
         int input_size = (layer == 0) ? attn->input_dim : attn->output_dim;
-        int output_size = (layer == attn->num_layers - 1) ? attn->output_dim : attn->output_dim;
-        
-        int w_qkv_size = attn->hidden_dim * input_size;
-        int w_o_size = output_size * attn->hidden_dim;
-        int w_r_size = output_size * input_size;
-        
-        fwrite(attn->W_q_m[layer], sizeof(float), w_qkv_size, file);
-        fwrite(attn->W_q_v[layer], sizeof(float), w_qkv_size, file);
-        fwrite(attn->W_k_m[layer], sizeof(float), w_qkv_size, file);
-        fwrite(attn->W_k_v[layer], sizeof(float), w_qkv_size, file);
-        fwrite(attn->W_v_m[layer], sizeof(float), w_qkv_size, file);
-        fwrite(attn->W_v_v[layer], sizeof(float), w_qkv_size, file);
-        fwrite(attn->W_o_m[layer], sizeof(float), w_o_size, file);
-        fwrite(attn->W_o_v[layer], sizeof(float), w_o_size, file);
-        fwrite(attn->W_r_m[layer], sizeof(float), w_r_size, file);
-        fwrite(attn->W_r_v[layer], sizeof(float), w_r_size, file);
+        int output_size = attn->output_dim;
+
+        int Wq_size = input_size * attn->head_dim;
+        int Wk_size = input_size * attn->head_dim;
+        int Wv_size = input_size * attn->head_dim;
+        int Wo_size = attn->head_dim * output_size;
+        int Wr_size = input_size * output_size;
+
+        fwrite(attn->Wq_m[layer], sizeof(float), Wq_size, file);
+        fwrite(attn->Wq_v[layer], sizeof(float), Wq_size, file);
+        fwrite(attn->Wk_m[layer], sizeof(float), Wk_size, file);
+        fwrite(attn->Wk_v[layer], sizeof(float), Wk_size, file);
+        fwrite(attn->Wv_m[layer], sizeof(float), Wv_size, file);
+        fwrite(attn->Wv_v[layer], sizeof(float), Wv_size, file);
+        fwrite(attn->Wo_m[layer], sizeof(float), Wo_size, file);
+        fwrite(attn->Wo_v[layer], sizeof(float), Wo_size, file);
+        fwrite(attn->Wr_m[layer], sizeof(float), Wr_size, file);
+        fwrite(attn->Wr_v[layer], sizeof(float), Wr_size, file);
     }
 
     fclose(file);
     printf("Model saved to %s\n", filename);
 }
 
-// Load model weights and AdamW state from binary file
+// Load model weights and Adam state from binary file
 Attention* load_attention(const char* filename, int custom_batch_size) {
     FILE* file = fopen(filename, "rb");
     if (!file) {
         printf("Error opening file for reading: %s\n", filename);
         return NULL;
     }
-    
-    // Read dimensions
-    int input_dim, hidden_dim, output_dim, seq_len, stored_batch_size, num_layers;
+
+    int input_dim, head_dim, output_dim, seq_len, stored_batch_size, num_layers;
     fread(&input_dim, sizeof(int), 1, file);
-    fread(&hidden_dim, sizeof(int), 1, file);
+    fread(&head_dim, sizeof(int), 1, file);
     fread(&output_dim, sizeof(int), 1, file);
     fread(&seq_len, sizeof(int), 1, file);
     fread(&stored_batch_size, sizeof(int), 1, file);
     fread(&num_layers, sizeof(int), 1, file);
-    
-    // Use custom_batch_size if provided, otherwise use stored value
+
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
-    
-    // Initialize network
-    Attention* attn = init_attention(input_dim, hidden_dim, output_dim, seq_len, batch_size, num_layers);
-    
-    // Load weights for each layer
+
+    Attention* attn = init_attention(input_dim, head_dim, output_dim, seq_len, batch_size, num_layers);
+
     for (int layer = 0; layer < num_layers; layer++) {
         int input_size = (layer == 0) ? input_dim : output_dim;
-        int output_size = (layer == num_layers - 1) ? output_dim : output_dim;
-        
-        int w_qkv_size = hidden_dim * input_size;
-        int w_o_size = output_size * hidden_dim;
-        int w_r_size = output_size * input_size;
-        
-        fread(attn->W_q[layer], sizeof(float), w_qkv_size, file);
-        fread(attn->W_k[layer], sizeof(float), w_qkv_size, file);
-        fread(attn->W_v[layer], sizeof(float), w_qkv_size, file);
-        fread(attn->W_o[layer], sizeof(float), w_o_size, file);
-        fread(attn->W_r[layer], sizeof(float), w_r_size, file);
+        int output_size = output_dim;
+
+        int Wq_size = input_size * head_dim;
+        int Wk_size = input_size * head_dim;
+        int Wv_size = input_size * head_dim;
+        int Wo_size = head_dim * output_size;
+        int Wr_size = input_size * output_size;
+
+        fread(attn->Wq[layer], sizeof(float), Wq_size, file);
+        fread(attn->Wk[layer], sizeof(float), Wk_size, file);
+        fread(attn->Wv[layer], sizeof(float), Wv_size, file);
+        fread(attn->Wo[layer], sizeof(float), Wo_size, file);
+        fread(attn->Wr[layer], sizeof(float), Wr_size, file);
     }
-    
-    // Load AdamW state
+
     fread(&attn->t, sizeof(int), 1, file);
+
     for (int layer = 0; layer < num_layers; layer++) {
         int input_size = (layer == 0) ? input_dim : output_dim;
-        int output_size = (layer == num_layers - 1) ? output_dim : output_dim;
-        
-        int w_qkv_size = hidden_dim * input_size;
-        int w_o_size = output_size * hidden_dim;
-        int w_r_size = output_size * input_size;
-        
-        fread(attn->W_q_m[layer], sizeof(float), w_qkv_size, file);
-        fread(attn->W_q_v[layer], sizeof(float), w_qkv_size, file);
-        fread(attn->W_k_m[layer], sizeof(float), w_qkv_size, file);
-        fread(attn->W_k_v[layer], sizeof(float), w_qkv_size, file);
-        fread(attn->W_v_m[layer], sizeof(float), w_qkv_size, file);
-        fread(attn->W_v_v[layer], sizeof(float), w_qkv_size, file);
-        fread(attn->W_o_m[layer], sizeof(float), w_o_size, file);
-        fread(attn->W_o_v[layer], sizeof(float), w_o_size, file);
-        fread(attn->W_r_m[layer], sizeof(float), w_r_size, file);
-        fread(attn->W_r_v[layer], sizeof(float), w_r_size, file);
+        int output_size = output_dim;
+
+        int Wq_size = input_size * head_dim;
+        int Wk_size = input_size * head_dim;
+        int Wv_size = input_size * head_dim;
+        int Wo_size = head_dim * output_size;
+        int Wr_size = input_size * output_size;
+
+        fread(attn->Wq_m[layer], sizeof(float), Wq_size, file);
+        fread(attn->Wq_v[layer], sizeof(float), Wq_size, file);
+        fread(attn->Wk_m[layer], sizeof(float), Wk_size, file);
+        fread(attn->Wk_v[layer], sizeof(float), Wk_size, file);
+        fread(attn->Wv_m[layer], sizeof(float), Wv_size, file);
+        fread(attn->Wv_v[layer], sizeof(float), Wv_size, file);
+        fread(attn->Wo_m[layer], sizeof(float), Wo_size, file);
+        fread(attn->Wo_v[layer], sizeof(float), Wo_size, file);
+        fread(attn->Wr_m[layer], sizeof(float), Wr_size, file);
+        fread(attn->Wr_v[layer], sizeof(float), Wr_size, file);
     }
-    
+
     fclose(file);
     printf("Model loaded from %s\n", filename);
-    
+
     return attn;
 }
