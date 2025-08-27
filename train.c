@@ -16,15 +16,14 @@ int main() {
     const int output_dim = 4;
     const int seq_len = 8;
     const int num_sequences = 128;
-    const int num_layers = 2;
     const int batch_size = num_sequences;
 
     // Generate synthetic sequence data with temporal dependencies
     float *X, *y;
-    generate_data(&X, &y, num_sequences, seq_len, input_dim, output_dim, -3.0f, 3.0f, 3);
+    generate_data(&X, &y, num_sequences, seq_len, input_dim, output_dim, -3.0f, 3.0f, seq_len);
 
     // Initialize attention model
-    Attention* attn = init_attention(input_dim, head_dim, output_dim, seq_len, batch_size, num_layers);
+    Attention* attn = init_attention(input_dim, head_dim, output_dim, seq_len, batch_size);
 
     // Training parameters
     const int num_epochs = 10000;
@@ -80,7 +79,6 @@ int main() {
 
     // Calculate R² scores
     printf("\nR² scores:\n");
-    int last_layer = loaded_attn->num_layers - 1;
     int total_samples = num_sequences * seq_len;
     for (int i = 0; i < output_dim; i++) {
         float y_mean = 0.0f;
@@ -97,7 +95,7 @@ int main() {
         for (int b = 0; b < num_sequences; b++) {
             for (int t = 0; t < seq_len; t++) {
                 int idx = b * seq_len * output_dim + t * output_dim + i;
-                float pred = loaded_attn->layer_output[last_layer][idx];
+                float pred = loaded_attn->layer_output[idx];
                 float actual = y[idx];
                 float diff_res = actual - pred;
                 float diff_tot = actual - y_mean;
@@ -118,7 +116,7 @@ int main() {
         printf("\ny%d:\n", i);
         for (int t = 0; t < seq_len; t++) {
             int idx = 0 * seq_len * output_dim + t * output_dim + i; // sequence b=0
-            float pred = loaded_attn->layer_output[last_layer][idx];
+            float pred = loaded_attn->layer_output[idx];
             float actual = y[idx];
             float diff = pred - actual;
             printf("t=%d\t\t%8.3f\t%8.3f\t%8.3f\n", t, pred, actual, diff);
@@ -129,7 +127,7 @@ int main() {
         for (int b = 0; b < num_sequences; b++) {
             for (int t = 0; t < seq_len; t++) {
                 int idx = b * seq_len * output_dim + t * output_dim + i;
-                mae += fabsf(loaded_attn->layer_output[last_layer][idx] - y[idx]);
+                mae += fabsf(loaded_attn->layer_output[idx] - y[idx]);
             }
         }
         mae /= total_samples;
