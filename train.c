@@ -20,9 +20,8 @@ int main() {
     const int batch_size = num_sequences;
 
     // Generate synthetic sequence data
-    // Negative max_offset allows forward (future) temporal dependencies as well (bidirectional)
     float *X, *y;
-    generate_data(&X, &y, num_sequences, seq_len, input_dim, output_dim, -3.0f, 3.0f, seq_len);
+    generate_data(&X, &y, num_sequences, seq_len, input_dim, output_dim, -3.0f, 3.0f, -2);
 
     // Initialize attention model
     Attention* attn = init_attention(input_dim, head_dim, output_dim, seq_len, batch_size, num_layers);

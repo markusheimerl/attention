@@ -8,12 +8,12 @@
 #include <cblas.h>
 
 typedef struct {
-    // Weights (single-head attention + residual projection)
+    // Weights (query, key, value, output projection, residual connection)
     float** Wq;  // [num_layers][input_size x head_dim]
     float** Wk;  // [num_layers][input_size x head_dim]
     float** Wv;  // [num_layers][input_size x head_dim]
     float** Wo;  // [num_layers][head_dim   x output_size]
-    float** Wr;  // [num_layers][input_size x output_size]
+    float** Wr;  // [num_layers][input_size x output_size] (residual)
 
     // Gradients
     float** Wq_grad;
@@ -34,22 +34,22 @@ typedef struct {
     int t;
     float weight_decay;
 
-    // Layer buffers (batch-major: [batch_size x seq_len x ...])
+    // Layer buffers
     float** layer_Q;       // [num_layers][batch_size*seq_len*head_dim]
     float** layer_K;       // [num_layers][batch_size*seq_len*head_dim]
     float** layer_V;       // [num_layers][batch_size*seq_len*head_dim]
-    float** layer_scores;  // [num_layers][batch_size*seq_len*seq_len] (pre-softmax)
-    float** layer_attn;    // [num_layers][batch_size*seq_len*seq_len] (softmax probs)
+    float** layer_scores;  // [num_layers][batch_size*seq_len*seq_len]
+    float** layer_attn;    // [num_layers][batch_size*seq_len*seq_len]
     float** layer_O;       // [num_layers][batch_size*seq_len*head_dim]
     float** layer_output;  // [num_layers][batch_size*seq_len*output_dim]
 
     // Error buffers for backprop
-    float** error_output;  // [num_layers][batch_size*seq_len*output_dim] (dL/dY)
-    float** error_O;       // [num_layers][batch_size*seq_len*head_dim] (dL/dO)
-    float** error_Q;       // [num_layers][batch_size*seq_len*head_dim] (dL/dQ)
-    float** error_K;       // [num_layers][batch_size*seq_len*head_dim] (dL/dK)
-    float** error_V;       // [num_layers][batch_size*seq_len*head_dim] (dL/dV)
-    float** error_scores;  // [num_layers][batch_size*seq_len*seq_len] (dL/dScores)
+    float** error_output;  // [num_layers][batch_size*seq_len*output_dim]
+    float** error_O;       // [num_layers][batch_size*seq_len*head_dim]
+    float** error_Q;       // [num_layers][batch_size*seq_len*head_dim]
+    float** error_K;       // [num_layers][batch_size*seq_len*head_dim]
+    float** error_V;       // [num_layers][batch_size*seq_len*head_dim]
+    float** error_scores;  // [num_layers][batch_size*seq_len*seq_len]
 
     // Dimensions
     int input_dim;
