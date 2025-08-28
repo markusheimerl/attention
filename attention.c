@@ -90,22 +90,22 @@ void forward_pass_attention(Attention* attn, float* X) {
     int total_seq = attn->batch_size * attn->seq_len;
     
     // Q = XW_q, K = XW_k, V = XW_v
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                total_seq, attn->d_model, attn->d_model,
-                1.0f, X, attn->d_model,
-                attn->W_q, attn->d_model,
+    cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                attn->d_model, total_seq, attn->d_model,
+                1.0f, attn->W_q, attn->d_model,
+                X, attn->d_model,
                 0.0f, attn->Q, attn->d_model);
     
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                total_seq, attn->d_model, attn->d_model,
-                1.0f, X, attn->d_model,
-                attn->W_k, attn->d_model,
+    cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                attn->d_model, total_seq, attn->d_model,
+                1.0f, attn->W_k, attn->d_model,
+                X, attn->d_model,
                 0.0f, attn->K, attn->d_model);
     
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                total_seq, attn->d_model, attn->d_model,
-                1.0f, X, attn->d_model,
-                attn->W_v, attn->d_model,
+    cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                attn->d_model, total_seq, attn->d_model,
+                1.0f, attn->W_v, attn->d_model,
+                X, attn->d_model,
                 0.0f, attn->V, attn->d_model);
     
     // Compute attention scores and weights for each batch
@@ -117,10 +117,10 @@ void forward_pass_attention(Attention* attn, float* X) {
         float* weights_batch = attn->attn_weights + batch * attn->seq_len * attn->seq_len;
         
         // Attention scores = QK^T / sqrt(d_model)
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
                     attn->seq_len, attn->seq_len, attn->d_model,
-                    scale, Q_batch, attn->d_model,
-                    K_batch, attn->d_model,
+                    scale, K_batch, attn->d_model,
+                    Q_batch, attn->d_model,
                     0.0f, scores_batch, attn->seq_len);
         
         // Apply softmax to get attention weights
@@ -153,18 +153,18 @@ void forward_pass_attention(Attention* attn, float* X) {
         float* output_batch = attn->attn_output + batch * attn->seq_len * attn->d_model;
         
         // Attention output = weights * V
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                    attn->seq_len, attn->d_model, attn->seq_len,
-                    1.0f, weights_batch, attn->seq_len,
-                    V_batch, attn->d_model,
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                    attn->d_model, attn->seq_len, attn->seq_len,
+                    1.0f, V_batch, attn->d_model,
+                    weights_batch, attn->seq_len,
                     0.0f, output_batch, attn->d_model);
     }
     
     // Apply output projection: layer_output = attn_output * W_o
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                total_seq, attn->d_model, attn->d_model,
-                1.0f, attn->attn_output, attn->d_model,
-                attn->W_o, attn->d_model,
+    cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                attn->d_model, total_seq, attn->d_model,
+                1.0f, attn->W_o, attn->d_model,
+                attn->attn_output, attn->d_model,
                 0.0f, attn->layer_output, attn->d_model);
 }
 
@@ -196,17 +196,17 @@ void backward_pass_attention(Attention* attn, float* X) {
     int total_seq = attn->batch_size * attn->seq_len;
     
     // ∂L/∂W_o = attn_output^T * error_output
-    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+    cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                 attn->d_model, attn->d_model, total_seq,
-                1.0f, attn->attn_output, attn->d_model,
-                attn->error_output, attn->d_model,
+                1.0f, attn->error_output, attn->d_model,
+                attn->attn_output, attn->d_model,
                 1.0f, attn->W_o_grad, attn->d_model);
     
     // ∂L/∂attn_output = error_output * W_o^T
-    cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                total_seq, attn->d_model, attn->d_model,
-                1.0f, attn->error_output, attn->d_model,
-                attn->W_o, attn->d_model,
+    cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
+                attn->d_model, total_seq, attn->d_model,
+                1.0f, attn->W_o, attn->d_model,
+                attn->error_output, attn->d_model,
                 0.0f, attn->grad_attn_out, attn->d_model);
     
     // Backpropagate through attention for each batch
@@ -223,17 +223,17 @@ void backward_pass_attention(Attention* attn, float* X) {
         float* dV_batch = attn->grad_V + batch * attn->seq_len * attn->d_model;
         
         // ∂L/∂V = weights^T * d_attn_output
-        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                    attn->seq_len, attn->d_model, attn->seq_len,
-                    1.0f, attn_weights_batch, attn->seq_len,
-                    d_attn_output_batch, attn->d_model,
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
+                    attn->d_model, attn->seq_len, attn->seq_len,
+                    1.0f, d_attn_output_batch, attn->d_model,
+                    attn_weights_batch, attn->seq_len,
                     0.0f, dV_batch, attn->d_model);
         
         // ∂L/∂weights = d_attn_output * V^T
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
                     attn->seq_len, attn->seq_len, attn->d_model,
-                    1.0f, d_attn_output_batch, attn->d_model,
-                    V_batch, attn->d_model,
+                    1.0f, V_batch, attn->d_model,
+                    d_attn_output_batch, attn->d_model,
                     0.0f, d_weights_batch, attn->seq_len);
         
         // Backpropagate through softmax
@@ -254,40 +254,40 @@ void backward_pass_attention(Attention* attn, float* X) {
         
         // ∂L/∂Q = d_scores * K / sqrt(d_model)
         float scale = 1.0f / sqrtf(attn->d_model);
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                    attn->seq_len, attn->d_model, attn->seq_len,
-                    scale, d_scores_batch, attn->seq_len,
-                    K_batch, attn->d_model,
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                    attn->d_model, attn->seq_len, attn->seq_len,
+                    scale, K_batch, attn->d_model,
+                    d_scores_batch, attn->seq_len,
                     0.0f, dQ_batch, attn->d_model);
         
         // ∂L/∂K = d_scores^T * Q / sqrt(d_model)
-        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                    attn->seq_len, attn->d_model, attn->seq_len,
-                    scale, d_scores_batch, attn->seq_len,
-                    Q_batch, attn->d_model,
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
+                    attn->d_model, attn->seq_len, attn->seq_len,
+                    scale, Q_batch, attn->d_model,
+                    d_scores_batch, attn->seq_len,
                     0.0f, dK_batch, attn->d_model);
     }
     
-    // Accumulate weight gradients across all batches
+    // Accumulate weight gradients
     // ∂L/∂W_q = X^T * grad_Q
-    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+    cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                 attn->d_model, attn->d_model, total_seq,
-                1.0f, X, attn->d_model,
-                attn->grad_Q, attn->d_model,
+                1.0f, attn->grad_Q, attn->d_model,
+                X, attn->d_model,
                 1.0f, attn->W_q_grad, attn->d_model);
     
     // ∂L/∂W_k = X^T * grad_K
-    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+    cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                 attn->d_model, attn->d_model, total_seq,
-                1.0f, X, attn->d_model,
-                attn->grad_K, attn->d_model,
+                1.0f, attn->grad_K, attn->d_model,
+                X, attn->d_model,
                 1.0f, attn->W_k_grad, attn->d_model);
     
     // ∂L/∂W_v = X^T * grad_V
-    cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+    cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                 attn->d_model, attn->d_model, total_seq,
-                1.0f, X, attn->d_model,
-                attn->grad_V, attn->d_model,
+                1.0f, attn->grad_V, attn->d_model,
+                X, attn->d_model,
                 1.0f, attn->W_v_grad, attn->d_model);
 }
 
