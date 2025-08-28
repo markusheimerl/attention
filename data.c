@@ -1,8 +1,8 @@
 #include "data.h"
 
 void generate_attention_data(float** X, float** y, int num_samples, int seq_len, int feature_dim) {
-    *X = malloc(num_samples * seq_len * feature_dim * sizeof(float));
-    *y = malloc(num_samples * seq_len * feature_dim * sizeof(float));
+    *X = (float*)malloc(num_samples * seq_len * feature_dim * sizeof(float));
+    *y = (float*)malloc(num_samples * seq_len * feature_dim * sizeof(float));
     
     printf("Generating attention task data: [%d, %d, %d]\n", num_samples, seq_len, feature_dim);
     
