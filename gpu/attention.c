@@ -1,13 +1,14 @@
 #include "attention.h"
 
 // Initialize the attention network
-Attention* init_attention(int d_model, int seq_len, int batch_size, cublasHandle_t cublas_handle) {
+Attention* init_attention(int d_model, int seq_len, int batch_size, int num_heads, cublasHandle_t cublas_handle) {
     Attention* attn = (Attention*)malloc(sizeof(Attention));
     
     // Store dimensions
     attn->d_model = d_model;
     attn->seq_len = seq_len;
     attn->batch_size = batch_size;
+    attn->num_heads = num_heads;
     
     // Initialize Adam parameters
     attn->beta1 = 0.9f;
@@ -21,7 +22,7 @@ Attention* init_attention(int d_model, int seq_len, int batch_size, cublasHandle
     
     int weight_size = d_model * d_model;
     int seq_size = batch_size * seq_len * d_model;
-    int attn_size = batch_size * seq_len * seq_len;
+    int attn_size = batch_size * num_heads * seq_len * seq_len;
     
     // Allocate host memory for weight initialization
     float* h_W_q = (float*)malloc(weight_size * sizeof(float));
@@ -115,12 +116,13 @@ void free_attention(Attention* attn) {
 }
 
 // CUDA kernel for softmax forward pass
-__global__ void softmax_forward_kernel_attention(float* weights, float* scores, int batch_size, int seq_len) {
+__global__ void softmax_forward_kernel_attention(float* weights, float* scores, int batch_size, int num_heads, int seq_len) {
     int batch = blockIdx.x;
+    int head = blockIdx.y;
     int row = threadIdx.x;
     
-    if (batch < batch_size && row < seq_len) {
-        int offset = batch * seq_len * seq_len + row * seq_len;
+    if (batch < batch_size && head < num_heads && row < seq_len) {
+        int offset = (batch * num_heads + head) * seq_len * seq_len + row * seq_len;
         float* row_scores = scores + offset;
         float* row_weights = weights + offset;
         
@@ -143,12 +145,13 @@ __global__ void softmax_forward_kernel_attention(float* weights, float* scores, 
 }
 
 // CUDA kernel for softmax backward pass
-__global__ void softmax_backward_kernel_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len) {
+__global__ void softmax_backward_kernel_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int num_heads, int seq_len) {
     int batch = blockIdx.x;
+    int head = blockIdx.y;
     int row = threadIdx.x;
     
-    if (batch < batch_size && row < seq_len) {
-        int offset = batch * seq_len * seq_len + row * seq_len;
+    if (batch < batch_size && head < num_heads && row < seq_len) {
+        int offset = (batch * num_heads + head) * seq_len * seq_len + row * seq_len;
         float* weights_row = weights + offset;
         float* grad_weights_row = grad_weights + offset;
         float* grad_scores_row = grad_scores + offset;
@@ -169,6 +172,7 @@ void forward_pass_attention(Attention* attn, float* d_X) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
     int total_seq = attn->batch_size * attn->seq_len;
+    int d_k = attn->d_model / attn->num_heads;
     
     // Q = XW_q, K = XW_k, V = XW_v
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
@@ -192,42 +196,46 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                             d_X, attn->d_model,
                             &beta, attn->d_V, attn->d_model));
     
-    // Compute attention scores and weights for each batch
-    float scale = 1.0f / sqrtf(attn->d_model);
+    // Compute attention scores and weights for each batch and head
+    float scale = 1.0f / sqrtf(d_k);
     for (int batch = 0; batch < attn->batch_size; batch++) {
-        float* Q_batch = attn->d_Q + batch * attn->seq_len * attn->d_model;
-        float* K_batch = attn->d_K + batch * attn->seq_len * attn->d_model;
-        float* scores_batch = attn->d_attn_scores + batch * attn->seq_len * attn->seq_len;
-        
-        // Attention scores = QK^T / sqrt(d_model)
-        CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
-                                CUBLAS_OP_T, CUBLAS_OP_N,
-                                attn->seq_len, attn->seq_len, attn->d_model,
-                                &scale, K_batch, attn->d_model,
-                                Q_batch, attn->d_model,
-                                &beta, scores_batch, attn->seq_len));
+        for (int head = 0; head < attn->num_heads; head++) {
+            float* Q_head = attn->d_Q + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* K_head = attn->d_K + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* scores_head = attn->d_attn_scores + (batch * attn->num_heads + head) * attn->seq_len * attn->seq_len;
+            
+            // Attention scores = QK^T / sqrt(d_k)
+            CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                    CUBLAS_OP_T, CUBLAS_OP_N,
+                                    attn->seq_len, attn->seq_len, d_k,
+                                    &scale, K_head, attn->d_model,
+                                    Q_head, attn->d_model,
+                                    &beta, scores_head, attn->seq_len));
+        }
     }
     
     // Apply softmax to get attention weights
-    dim3 grid(attn->batch_size);
+    dim3 grid(attn->batch_size, attn->num_heads);
     dim3 block(attn->seq_len);
     softmax_forward_kernel_attention<<<grid, block>>>(
-        attn->d_attn_weights, attn->d_attn_scores, attn->batch_size, attn->seq_len
+        attn->d_attn_weights, attn->d_attn_scores, attn->batch_size, attn->num_heads, attn->seq_len
     );
     
-    // Compute weighted values for each batch
+    // Compute weighted values for each batch and head
     for (int batch = 0; batch < attn->batch_size; batch++) {
-        float* weights_batch = attn->d_attn_weights + batch * attn->seq_len * attn->seq_len;
-        float* V_batch = attn->d_V + batch * attn->seq_len * attn->d_model;
-        float* output_batch = attn->d_attn_output + batch * attn->seq_len * attn->d_model;
-        
-        // Attention output = weights * V
-        CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
-                                CUBLAS_OP_N, CUBLAS_OP_N,
-                                attn->d_model, attn->seq_len, attn->seq_len,
-                                &alpha, V_batch, attn->d_model,
-                                weights_batch, attn->seq_len,
-                                &beta, output_batch, attn->d_model));
+        for (int head = 0; head < attn->num_heads; head++) {
+            float* weights_head = attn->d_attn_weights + (batch * attn->num_heads + head) * attn->seq_len * attn->seq_len;
+            float* V_head = attn->d_V + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* output_head = attn->d_attn_output + batch * attn->seq_len * attn->d_model + head * d_k;
+            
+            // Attention output = weights * V
+            CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                    CUBLAS_OP_N, CUBLAS_OP_N,
+                                    d_k, attn->seq_len, attn->seq_len,
+                                    &alpha, V_head, attn->d_model,
+                                    weights_head, attn->seq_len,
+                                    &beta, output_head, attn->d_model));
+        }
     }
     
     // Apply output projection: layer_output = attn_output * W_o
@@ -274,6 +282,7 @@ void backward_pass_attention(Attention* attn, float* d_X) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
     int total_seq = attn->batch_size * attn->seq_len;
+    int d_k = attn->d_model / attn->num_heads;
     
     // ∂L/∂W_o = attn_output^T * error_output
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
@@ -291,61 +300,66 @@ void backward_pass_attention(Attention* attn, float* d_X) {
                             attn->d_error_output, attn->d_model,
                             &beta, attn->d_grad_attn_out, attn->d_model));
     
-    // Backpropagate through attention for each batch
+    // Backpropagate through multi-head attention
+    float scale = 1.0f / sqrtf(d_k);
     for (int batch = 0; batch < attn->batch_size; batch++) {
-        float* d_attn_output_batch = attn->d_grad_attn_out + batch * attn->seq_len * attn->d_model;
-        float* V_batch = attn->d_V + batch * attn->seq_len * attn->d_model;
-        float* d_weights_batch = attn->d_grad_weights + batch * attn->seq_len * attn->seq_len;
-        float* dV_batch = attn->d_grad_V + batch * attn->seq_len * attn->d_model;
-        
-        // ∂L/∂V = weights^T * d_attn_output
-        CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
-                                CUBLAS_OP_N, CUBLAS_OP_T,
-                                attn->d_model, attn->seq_len, attn->seq_len,
-                                &alpha, d_attn_output_batch, attn->d_model,
-                                attn->d_attn_weights + batch * attn->seq_len * attn->seq_len, attn->seq_len,
-                                &beta, dV_batch, attn->d_model));
-        
-        // ∂L/∂weights = d_attn_output * V^T
-        CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
-                                CUBLAS_OP_T, CUBLAS_OP_N,
-                                attn->seq_len, attn->seq_len, attn->d_model,
-                                &alpha, V_batch, attn->d_model,
-                                d_attn_output_batch, attn->d_model,
-                                &beta, d_weights_batch, attn->seq_len));
+        for (int head = 0; head < attn->num_heads; head++) {
+            float* d_attn_output_head = attn->d_grad_attn_out + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* weights_head = attn->d_attn_weights + (batch * attn->num_heads + head) * attn->seq_len * attn->seq_len;
+            float* V_head = attn->d_V + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* d_weights_head = attn->d_grad_weights + (batch * attn->num_heads + head) * attn->seq_len * attn->seq_len;
+            float* dV_head = attn->d_grad_V + batch * attn->seq_len * attn->d_model + head * d_k;
+            
+            // ∂L/∂V = weights^T * d_attn_output
+            CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                    CUBLAS_OP_N, CUBLAS_OP_T,
+                                    d_k, attn->seq_len, attn->seq_len,
+                                    &alpha, d_attn_output_head, attn->d_model,
+                                    weights_head, attn->seq_len,
+                                    &beta, dV_head, attn->d_model));
+            
+            // ∂L/∂weights = d_attn_output * V^T
+            CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                    CUBLAS_OP_T, CUBLAS_OP_N,
+                                    attn->seq_len, attn->seq_len, d_k,
+                                    &alpha, V_head, attn->d_model,
+                                    d_attn_output_head, attn->d_model,
+                                    &beta, d_weights_head, attn->seq_len));
+        }
     }
     
     // Backpropagate through softmax
-    dim3 grid(attn->batch_size);
+    dim3 grid(attn->batch_size, attn->num_heads);
     dim3 block(attn->seq_len);
     softmax_backward_kernel_attention<<<grid, block>>>(
-        attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->seq_len
+        attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->num_heads, attn->seq_len
     );
     
     // Backpropagate through attention scores
-    float scale = 1.0f / sqrtf(attn->d_model);
     for (int batch = 0; batch < attn->batch_size; batch++) {
-        float* d_scores_batch = attn->d_grad_scores + batch * attn->seq_len * attn->seq_len;
-        float* Q_batch = attn->d_Q + batch * attn->seq_len * attn->d_model;
-        float* K_batch = attn->d_K + batch * attn->seq_len * attn->d_model;
-        float* dQ_batch = attn->d_grad_Q + batch * attn->seq_len * attn->d_model;
-        float* dK_batch = attn->d_grad_K + batch * attn->seq_len * attn->d_model;
-        
-        // ∂L/∂Q = d_scores * K / sqrt(d_model)
-        CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
-                                CUBLAS_OP_N, CUBLAS_OP_N,
-                                attn->d_model, attn->seq_len, attn->seq_len,
-                                &scale, K_batch, attn->d_model,
-                                d_scores_batch, attn->seq_len,
-                                &beta, dQ_batch, attn->d_model));
-        
-        // ∂L/∂K = d_scores^T * Q / sqrt(d_model)
-        CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
-                                CUBLAS_OP_N, CUBLAS_OP_T,
-                                attn->d_model, attn->seq_len, attn->seq_len,
-                                &scale, Q_batch, attn->d_model,
-                                d_scores_batch, attn->seq_len,
-                                &beta, dK_batch, attn->d_model));
+        for (int head = 0; head < attn->num_heads; head++) {
+            float* d_scores_head = attn->d_grad_scores + (batch * attn->num_heads + head) * attn->seq_len * attn->seq_len;
+            float* Q_head = attn->d_Q + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* K_head = attn->d_K + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* dQ_head = attn->d_grad_Q + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* dK_head = attn->d_grad_K + batch * attn->seq_len * attn->d_model + head * d_k;
+            
+            // ∂L/∂Q = d_scores * K / sqrt(d_k)
+            CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                    CUBLAS_OP_N, CUBLAS_OP_N,
+                                    d_k, attn->seq_len, attn->seq_len,
+                                    &scale, K_head, attn->d_model,
+                                    d_scores_head, attn->seq_len,
+                                    &beta, dQ_head, attn->d_model));
+            
+            // ∂L/∂K = d_scores^T * Q / sqrt(d_k)
+            CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                    CUBLAS_OP_N, CUBLAS_OP_T,
+                                    d_k, attn->seq_len, attn->seq_len,
+                                    &scale, Q_head, attn->d_model,
+                                    d_scores_head, attn->seq_len,
+                                    &beta, dK_head, attn->d_model));
+        }
     }
     
     // Accumulate weight gradients
@@ -447,6 +461,7 @@ void save_attention(Attention* attn, const char* filename) {
     fwrite(&attn->d_model, sizeof(int), 1, file);
     fwrite(&attn->seq_len, sizeof(int), 1, file);
     fwrite(&attn->batch_size, sizeof(int), 1, file);
+    fwrite(&attn->num_heads, sizeof(int), 1, file);
     
     // Save weights
     int weight_size = attn->d_model * attn->d_model;
@@ -518,15 +533,16 @@ Attention* load_attention(const char* filename, int custom_batch_size, cublasHan
     }
     
     // Read dimensions
-    int d_model, seq_len, stored_batch_size;
+    int d_model, seq_len, stored_batch_size, num_heads;
     fread(&d_model, sizeof(int), 1, file);
     fread(&seq_len, sizeof(int), 1, file);
     fread(&stored_batch_size, sizeof(int), 1, file);
+    fread(&num_heads, sizeof(int), 1, file);
     
     // Use custom_batch_size if provided, otherwise use stored value
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
-    Attention* attn = init_attention(d_model, seq_len, batch_size, cublas_handle);
+    Attention* attn = init_attention(d_model, seq_len, batch_size, num_heads, cublas_handle);
     
     // Load weights
     int weight_size = d_model * d_model;

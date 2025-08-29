@@ -62,8 +62,8 @@ typedef struct {
     float* d_Q;              // [batch_size * seq_len x d_model] - Query activations
     float* d_K;              // [batch_size * seq_len x d_model] - Key activations
     float* d_V;              // [batch_size * seq_len x d_model] - Value activations
-    float* d_attn_scores;    // [batch_size * seq_len x seq_len] - Raw attention scores
-    float* d_attn_weights;   // [batch_size * seq_len x seq_len] - Softmax attention weights
+    float* d_attn_scores;    // [batch_size * num_heads * seq_len x seq_len] - Raw attention scores
+    float* d_attn_weights;   // [batch_size * num_heads * seq_len x seq_len] - Softmax attention weights
     float* d_attn_output;    // [batch_size * seq_len x d_model] - Weighted value sum
     float* d_layer_output;   // [batch_size * seq_len x d_model] - Final output after W_o
     
@@ -71,8 +71,8 @@ typedef struct {
     float* d_grad_Q;         // [batch_size * seq_len x d_model] - Gradient w.r.t. Q
     float* d_grad_K;         // [batch_size * seq_len x d_model] - Gradient w.r.t. K
     float* d_grad_V;         // [batch_size * seq_len x d_model] - Gradient w.r.t. V
-    float* d_grad_scores;    // [batch_size * seq_len x seq_len] - Gradient w.r.t. scores
-    float* d_grad_weights;   // [batch_size * seq_len x seq_len] - Gradient w.r.t. weights
+    float* d_grad_scores;    // [batch_size * num_heads * seq_len x seq_len] - Gradient w.r.t. scores
+    float* d_grad_weights;   // [batch_size * num_heads * seq_len x seq_len] - Gradient w.r.t. weights
     float* d_grad_attn_out;  // [batch_size * seq_len x d_model] - Gradient w.r.t. attention output
     float* d_error_output;   // [batch_size * seq_len x d_model] - Final output error
 
@@ -83,15 +83,16 @@ typedef struct {
     int d_model;      // Model dimension (feature_dim)
     int seq_len;      // Sequence length
     int batch_size;   // Batch size
+    int num_heads;    // Number of attention heads
 } Attention;
 
 // CUDA kernel prototypes
-__global__ void softmax_forward_kernel_attention(float* weights, float* scores, int batch_size, int seq_len);
-__global__ void softmax_backward_kernel_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len);
+__global__ void softmax_forward_kernel_attention(float* weights, float* scores, int batch_size, int num_heads, int seq_len);
+__global__ void softmax_backward_kernel_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int num_heads, int seq_len);
 __global__ void adamw_update_kernel_attention(float* weight, float* grad, float* m, float* v, float beta1, float beta2, float epsilon, float learning_rate, float weight_decay, float alpha_t, int size, int total_seq);
 
 // Function prototypes
-Attention* init_attention(int d_model, int seq_len, int batch_size, cublasHandle_t cublas_handle);
+Attention* init_attention(int d_model, int seq_len, int batch_size, int num_heads, cublasHandle_t cublas_handle);
 void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, float* d_X);
 float calculate_loss_attention(Attention* attn, float* d_y);
