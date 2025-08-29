@@ -89,19 +89,21 @@ void free_attention(Attention* attn) {
 void forward_pass_attention(Attention* attn, float* X) {
     int total_seq = attn->batch_size * attn->seq_len;
     
-    // Q = XW_q, K = XW_k, V = XW_v
+    // Q = XWq - Query transformation: maps inputs to query representations
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
                 attn->d_model, total_seq, attn->d_model,
                 1.0f, attn->W_q, attn->d_model,
                 X, attn->d_model,
                 0.0f, attn->Q, attn->d_model);
     
+    // K = XWk - Key transformation: produces keys for matching
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
                 attn->d_model, total_seq, attn->d_model,
                 1.0f, attn->W_k, attn->d_model,
                 X, attn->d_model,
                 0.0f, attn->K, attn->d_model);
     
+    // V = XWv - Value transformation: generates values to be aggregated
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
                 attn->d_model, total_seq, attn->d_model,
                 1.0f, attn->W_v, attn->d_model,
@@ -116,14 +118,14 @@ void forward_pass_attention(Attention* attn, float* X) {
         float* scores_batch = attn->attn_scores + batch * attn->seq_len * attn->seq_len;
         float* weights_batch = attn->attn_weights + batch * attn->seq_len * attn->seq_len;
         
-        // Attention scores = QK^T / sqrt(d_model)
+        // S = QK^T / √d_model - Scaled attention scores: measure compatibility between queries and keys
         cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
                     attn->seq_len, attn->seq_len, attn->d_model,
                     scale, K_batch, attn->d_model,
                     Q_batch, attn->d_model,
                     0.0f, scores_batch, attn->seq_len);
         
-        // Apply softmax to get attention weights
+        // A_ij = exp(S_ij) / Σ_k exp(S_ik) - Softmax normalization: produces attention weights
         for (int i = 0; i < attn->seq_len; i++) {
             float* row_scores = scores_batch + i * attn->seq_len;
             float* row_weights = weights_batch + i * attn->seq_len;
@@ -152,7 +154,7 @@ void forward_pass_attention(Attention* attn, float* X) {
         float* V_batch = attn->V + batch * attn->seq_len * attn->d_model;
         float* output_batch = attn->attn_output + batch * attn->seq_len * attn->d_model;
         
-        // Attention output = weights * V
+        // Z = AV - Weighted combination: attention output as weighted sum of values
         cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
                     attn->d_model, attn->seq_len, attn->seq_len,
                     1.0f, V_batch, attn->d_model,
@@ -160,7 +162,7 @@ void forward_pass_attention(Attention* attn, float* X) {
                     0.0f, output_batch, attn->d_model);
     }
     
-    // Apply output projection: layer_output = attn_output * W_o
+    // Y = ZWo - Output projection: transforms attended values to final outputs
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
                 attn->d_model, total_seq, attn->d_model,
                 1.0f, attn->W_o, attn->d_model,
@@ -195,14 +197,14 @@ void zero_gradients_attention(Attention* attn) {
 void backward_pass_attention(Attention* attn, float* X) {
     int total_seq = attn->batch_size * attn->seq_len;
     
-    // ∂L/∂W_o = attn_output^T * error_output
+    // ∂L/∂Wo = Z^T(∂L/∂Y) - Output projection weight gradient
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                 attn->d_model, attn->d_model, total_seq,
                 1.0f, attn->error_output, attn->d_model,
                 attn->attn_output, attn->d_model,
                 1.0f, attn->W_o_grad, attn->d_model);
     
-    // ∂L/∂attn_output = error_output * W_o^T
+    // ∂L/∂Z = (∂L/∂Y)Wo^T - Gradient w.r.t. attention output
     cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
                 attn->d_model, total_seq, attn->d_model,
                 1.0f, attn->W_o, attn->d_model,
@@ -222,27 +224,26 @@ void backward_pass_attention(Attention* attn, float* X) {
         float* dK_batch = attn->grad_K + batch * attn->seq_len * attn->d_model;
         float* dV_batch = attn->grad_V + batch * attn->seq_len * attn->d_model;
         
-        // ∂L/∂V = weights^T * d_attn_output
+        // ∂L/∂V = A^T(∂L/∂Z) - Gradient w.r.t. values
         cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                     attn->d_model, attn->seq_len, attn->seq_len,
                     1.0f, d_attn_output_batch, attn->d_model,
                     attn_weights_batch, attn->seq_len,
                     0.0f, dV_batch, attn->d_model);
         
-        // ∂L/∂weights = d_attn_output * V^T
+        // ∂L/∂A = (∂L/∂Z)V^T - Gradient w.r.t. attention weights
         cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
                     attn->seq_len, attn->seq_len, attn->d_model,
                     1.0f, V_batch, attn->d_model,
                     d_attn_output_batch, attn->d_model,
                     0.0f, d_weights_batch, attn->seq_len);
         
-        // Backpropagate through softmax
+        // ∂L/∂S_ij = A_ij(∂L/∂A_ij - Σ_k ∂L/∂A_ikA_ik) - Softmax backward pass
         for (int i = 0; i < attn->seq_len; i++) {
             float* weights_row = attn_weights_batch + i * attn->seq_len;
             float* d_weights_row = d_weights_batch + i * attn->seq_len;
             float* d_scores_row = d_scores_batch + i * attn->seq_len;
             
-            // Softmax gradient: d_scores[i] = weights[i] * (d_weights[i] - sum_j(d_weights[j] * weights[j]))
             float sum = 0.0f;
             for (int j = 0; j < attn->seq_len; j++) {
                 sum += d_weights_row[j] * weights_row[j];
@@ -252,7 +253,7 @@ void backward_pass_attention(Attention* attn, float* X) {
             }
         }
         
-        // ∂L/∂Q = d_scores * K / sqrt(d_model)
+        // ∂L/∂Q = (∂L/∂S)K / √d_model - Gradient w.r.t. queries
         float scale = 1.0f / sqrtf(attn->d_model);
         cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
                     attn->d_model, attn->seq_len, attn->seq_len,
@@ -260,7 +261,7 @@ void backward_pass_attention(Attention* attn, float* X) {
                     d_scores_batch, attn->seq_len,
                     0.0f, dQ_batch, attn->d_model);
         
-        // ∂L/∂K = d_scores^T * Q / sqrt(d_model)
+        // ∂L/∂K = (∂L/∂S)^TQ / √d_model - Gradient w.r.t. keys
         cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                     attn->d_model, attn->seq_len, attn->seq_len,
                     scale, Q_batch, attn->d_model,
@@ -269,21 +270,21 @@ void backward_pass_attention(Attention* attn, float* X) {
     }
     
     // Accumulate weight gradients
-    // ∂L/∂W_q = X^T * grad_Q
+    // ∂L/∂Wq = X^T(∂L/∂Q) - Query weight gradient
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                 attn->d_model, attn->d_model, total_seq,
                 1.0f, attn->grad_Q, attn->d_model,
                 X, attn->d_model,
                 1.0f, attn->W_q_grad, attn->d_model);
     
-    // ∂L/∂W_k = X^T * grad_K
+    // ∂L/∂Wk = X^T(∂L/∂K) - Key weight gradient
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                 attn->d_model, attn->d_model, total_seq,
                 1.0f, attn->grad_K, attn->d_model,
                 X, attn->d_model,
                 1.0f, attn->W_k_grad, attn->d_model);
     
-    // ∂L/∂W_v = X^T * grad_V
+    // ∂L/∂Wv = X^T(∂L/∂V) - Value weight gradient
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                 attn->d_model, attn->d_model, total_seq,
                 1.0f, attn->grad_V, attn->d_model,
@@ -312,7 +313,7 @@ void update_weights_attention(Attention* attn, float learning_rate) {
         attn->W_q_v[i] = attn->beta2 * attn->W_q_v[i] + (1.0f - attn->beta2) * grad * grad;
         
         float update = alpha_t * attn->W_q_m[i] / (sqrtf(attn->W_q_v[i]) + attn->epsilon);
-        // W = (1-λη)W - η·(m/(1-β₁ᵗ))/√(v/(1-β₂ᵗ) + ε)
+        // W = (1-λη)W - η(m/(1-β₁ᵗ))/√(v/(1-β₂ᵗ) + ε)
         attn->W_q[i] = attn->W_q[i] * (1.0f - learning_rate * attn->weight_decay) - update;
     }
     

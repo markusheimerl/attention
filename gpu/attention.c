@@ -170,7 +170,7 @@ void forward_pass_attention(Attention* attn, float* d_X) {
     const float beta = 0.0f;
     int total_seq = attn->batch_size * attn->seq_len;
     
-    // Q = XW_q, K = XW_k, V = XW_v
+    // Q = XWq - Query transformation: maps inputs to query representations
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_N,
                             attn->d_model, total_seq, attn->d_model,
@@ -178,6 +178,7 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                             d_X, attn->d_model,
                             &beta, attn->d_Q, attn->d_model));
     
+    // K = XWk - Key transformation: produces keys for matching
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_N,
                             attn->d_model, total_seq, attn->d_model,
@@ -185,6 +186,7 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                             d_X, attn->d_model,
                             &beta, attn->d_K, attn->d_model));
     
+    // V = XWv - Value transformation: generates values to be aggregated
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_N,
                             attn->d_model, total_seq, attn->d_model,
@@ -199,7 +201,7 @@ void forward_pass_attention(Attention* attn, float* d_X) {
         float* K_batch = attn->d_K + batch * attn->seq_len * attn->d_model;
         float* scores_batch = attn->d_attn_scores + batch * attn->seq_len * attn->seq_len;
         
-        // Attention scores = QK^T / sqrt(d_model)
+        // S = QK^T / √d_model - Scaled attention scores: measure compatibility between queries and keys
         CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                                 CUBLAS_OP_T, CUBLAS_OP_N,
                                 attn->seq_len, attn->seq_len, attn->d_model,
@@ -208,7 +210,7 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                                 &beta, scores_batch, attn->seq_len));
     }
     
-    // Apply softmax to get attention weights
+    // A_ij = exp(S_ij) / Σ_k exp(S_ik) - Softmax normalization: produces attention weights
     dim3 grid(attn->batch_size);
     dim3 block(attn->seq_len);
     softmax_forward_kernel_attention<<<grid, block>>>(
@@ -221,7 +223,7 @@ void forward_pass_attention(Attention* attn, float* d_X) {
         float* V_batch = attn->d_V + batch * attn->seq_len * attn->d_model;
         float* output_batch = attn->d_attn_output + batch * attn->seq_len * attn->d_model;
         
-        // Attention output = weights * V
+        // Z = AV - Weighted combination: attention output as weighted sum of values
         CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 attn->d_model, attn->seq_len, attn->seq_len,
@@ -230,7 +232,7 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                                 &beta, output_batch, attn->d_model));
     }
     
-    // Apply output projection: layer_output = attn_output * W_o
+    // Y = ZWo - Output projection: transforms attended values to final outputs
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_N,
                             attn->d_model, total_seq, attn->d_model,
@@ -275,7 +277,7 @@ void backward_pass_attention(Attention* attn, float* d_X) {
     const float beta = 0.0f;
     int total_seq = attn->batch_size * attn->seq_len;
     
-    // ∂L/∂W_o = attn_output^T * error_output
+    // ∂L/∂Wo = Z^T(∂L/∂Y) - Output projection weight gradient
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_T,
                             attn->d_model, attn->d_model, total_seq,
@@ -283,7 +285,7 @@ void backward_pass_attention(Attention* attn, float* d_X) {
                             attn->d_attn_output, attn->d_model,
                             &alpha, attn->d_W_o_grad, attn->d_model));
     
-    // ∂L/∂attn_output = error_output * W_o^T
+    // ∂L/∂Z = (∂L/∂Y)Wo^T - Gradient w.r.t. attention output
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_T, CUBLAS_OP_N,
                             attn->d_model, total_seq, attn->d_model,
@@ -298,7 +300,7 @@ void backward_pass_attention(Attention* attn, float* d_X) {
         float* d_weights_batch = attn->d_grad_weights + batch * attn->seq_len * attn->seq_len;
         float* dV_batch = attn->d_grad_V + batch * attn->seq_len * attn->d_model;
         
-        // ∂L/∂V = weights^T * d_attn_output
+        // ∂L/∂V = A^T(∂L/∂Z) - Gradient w.r.t. values
         CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_T,
                                 attn->d_model, attn->seq_len, attn->seq_len,
@@ -306,7 +308,7 @@ void backward_pass_attention(Attention* attn, float* d_X) {
                                 attn->d_attn_weights + batch * attn->seq_len * attn->seq_len, attn->seq_len,
                                 &beta, dV_batch, attn->d_model));
         
-        // ∂L/∂weights = d_attn_output * V^T
+        // ∂L/∂A = (∂L/∂Z)V^T - Gradient w.r.t. attention weights
         CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                                 CUBLAS_OP_T, CUBLAS_OP_N,
                                 attn->seq_len, attn->seq_len, attn->d_model,
@@ -315,7 +317,7 @@ void backward_pass_attention(Attention* attn, float* d_X) {
                                 &beta, d_weights_batch, attn->seq_len));
     }
     
-    // Backpropagate through softmax
+    // ∂L/∂S_ij = A_ij(∂L/∂A_ij - Σ_k ∂L/∂A_ikA_ik) - Softmax backward pass
     dim3 grid(attn->batch_size);
     dim3 block(attn->seq_len);
     softmax_backward_kernel_attention<<<grid, block>>>(
@@ -331,7 +333,7 @@ void backward_pass_attention(Attention* attn, float* d_X) {
         float* dQ_batch = attn->d_grad_Q + batch * attn->seq_len * attn->d_model;
         float* dK_batch = attn->d_grad_K + batch * attn->seq_len * attn->d_model;
         
-        // ∂L/∂Q = d_scores * K / sqrt(d_model)
+        // ∂L/∂Q = (∂L/∂S)K / √d_model - Gradient w.r.t. queries
         CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_N,
                                 attn->d_model, attn->seq_len, attn->seq_len,
@@ -339,7 +341,7 @@ void backward_pass_attention(Attention* attn, float* d_X) {
                                 d_scores_batch, attn->seq_len,
                                 &beta, dQ_batch, attn->d_model));
         
-        // ∂L/∂K = d_scores^T * Q / sqrt(d_model)
+        // ∂L/∂K = (∂L/∂S)^TQ / √d_model - Gradient w.r.t. keys
         CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                                 CUBLAS_OP_N, CUBLAS_OP_T,
                                 attn->d_model, attn->seq_len, attn->seq_len,
@@ -349,7 +351,7 @@ void backward_pass_attention(Attention* attn, float* d_X) {
     }
     
     // Accumulate weight gradients
-    // ∂L/∂W_q = X^T * grad_Q
+    // ∂L/∂Wq = X^T(∂L/∂Q) - Query weight gradient
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_T,
                             attn->d_model, attn->d_model, total_seq,
@@ -357,7 +359,7 @@ void backward_pass_attention(Attention* attn, float* d_X) {
                             d_X, attn->d_model,
                             &alpha, attn->d_W_q_grad, attn->d_model));
     
-    // ∂L/∂W_k = X^T * grad_K
+    // ∂L/∂Wk = X^T(∂L/∂K) - Key weight gradient
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_T,
                             attn->d_model, attn->d_model, total_seq,
@@ -365,7 +367,7 @@ void backward_pass_attention(Attention* attn, float* d_X) {
                             d_X, attn->d_model,
                             &alpha, attn->d_W_k_grad, attn->d_model));
     
-    // ∂L/∂W_v = X^T * grad_V
+    // ∂L/∂Wv = X^T(∂L/∂V) - Value weight gradient
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_T,
                             attn->d_model, attn->d_model, total_seq,
@@ -388,7 +390,7 @@ __global__ void adamw_update_kernel_attention(float* weight, float* grad, float*
         v[idx] = beta2 * v[idx] + (1.0f - beta2) * g * g;
         
         float update = alpha_t * m[idx] / (sqrtf(v[idx]) + epsilon);
-        // W = (1-λη)W - η·(m/(1-β₁ᵗ))/√(v/(1-β₂ᵗ) + ε)
+        // W = (1-λη)W - η(m/(1-β₁ᵗ))/√(v/(1-β₂ᵗ) + ε)
         weight[idx] = weight[idx] * (1.0f - learning_rate * weight_decay) - update;
     }
 }
