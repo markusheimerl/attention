@@ -9,13 +9,13 @@ Q &= XW_q \\
 K &= XW_k \\
 V &= XW_v \\
 S &= \frac{QK^\top}{\sqrt{d_{\text{model}}}} \\
-A &= \text{softmax}(S) \\
+A_{ij} &= \frac{\exp(S_{ij})}{\sum_k \exp(S_{ik})} \\
 Z &= AV \\
 Y &= ZW_o
 \end{align*}
 $$
 
-The query transformation matrix $W_q$ maps inputs to query representations, the key matrix $W_k$ produces keys for matching, the value matrix $W_v$ generates values to be aggregated, and the output projection matrix $W_o$ transforms the attended values to final outputs. The scaled attention scores $S$ measure compatibility between queries and keys, softmax normalization produces attention weights $A$, and $Z$ represents the weighted combination of values.
+The query transformation matrix $W_q$ maps inputs to query representations, the key matrix $W_k$ produces keys for matching, the value matrix $W_v$ generates values to be aggregated, and the output projection matrix $W_o$ transforms the attended values to final outputs. The scaled attention scores $S$ measure compatibility between queries and keys, normalization produces attention weights $A$, and $Z$ represents the weighted combination of values.
 
 The backward pass through the attention mechanism involves careful propagation through the softmax operation and matrix multiplications. For the softmax gradient, where $A_{ij}$ represents the attention weights and $\frac{\partial L}{\partial A_{ij}}$ is the incoming gradient:
 
