@@ -18,8 +18,8 @@ void train_model(Attention* attn, float* X, float* y, int num_samples, int batch
     const int num_batches = (num_samples + batch_size - 1) / batch_size;
     
     printf("Starting training...\n");
-    printf("Architecture: d_model=%d, seq_len=%d, batch_size=%d, num_samples=%d, num_batches=%d\n\n", 
-           attn->d_model, attn->seq_len, batch_size, num_samples, num_batches);
+    printf("Architecture: d_model=%d, seq_len=%d, num_heads=%d, batch_size=%d, num_samples=%d, num_batches=%d\n\n", 
+           attn->d_model, attn->seq_len, attn->num_heads, batch_size, num_samples, num_batches);
     
     for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
         float total_loss = 0.0f;
@@ -174,13 +174,13 @@ int main() {
     srand(time(NULL));
     openblas_set_num_threads(4);
 
-    const int seq_len = 16, feature_dim = 8, num_samples = 65536, batch_size = 512;
+    const int seq_len = 16, feature_dim = 8, num_heads = 4, num_samples = 65536, batch_size = 512;
     
     float *X, *y;
     generate_attention_data(&X, &y, num_samples, seq_len, feature_dim);
     print_data_samples(X, y, seq_len, feature_dim);
     
-    Attention* attn = init_attention(feature_dim, seq_len, batch_size);
+    Attention* attn = init_attention(feature_dim, seq_len, batch_size, num_heads);
     train_model(attn, X, y, num_samples, batch_size, 50, 0.001f);
 
     // Get timestamp and save

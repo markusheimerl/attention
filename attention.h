@@ -37,8 +37,8 @@ typedef struct {
     float* Q;              // [batch_size * seq_len x d_model] - Query activations
     float* K;              // [batch_size * seq_len x d_model] - Key activations
     float* V;              // [batch_size * seq_len x d_model] - Value activations
-    float* attn_scores;    // [batch_size * seq_len x seq_len] - Raw attention scores
-    float* attn_weights;   // [batch_size * seq_len x seq_len] - Softmax attention weights
+    float* attn_scores;    // [batch_size * num_heads * seq_len x seq_len] - Raw attention scores
+    float* attn_weights;   // [batch_size * num_heads * seq_len x seq_len] - Softmax attention weights
     float* attn_output;    // [batch_size * seq_len x d_model] - Weighted value sum
     float* layer_output;   // [batch_size * seq_len x d_model] - Final output after W_o
     
@@ -46,8 +46,8 @@ typedef struct {
     float* grad_Q;         // [batch_size * seq_len x d_model] - Gradient w.r.t. Q
     float* grad_K;         // [batch_size * seq_len x d_model] - Gradient w.r.t. K
     float* grad_V;         // [batch_size * seq_len x d_model] - Gradient w.r.t. V
-    float* grad_scores;    // [batch_size * seq_len x seq_len] - Gradient w.r.t. scores
-    float* grad_weights;   // [batch_size * seq_len x seq_len] - Gradient w.r.t. weights
+    float* grad_scores;    // [batch_size * num_heads * seq_len x seq_len] - Gradient w.r.t. scores
+    float* grad_weights;   // [batch_size * num_heads * seq_len x seq_len] - Gradient w.r.t. weights
     float* grad_attn_out;  // [batch_size * seq_len x d_model] - Gradient w.r.t. attention output
     float* error_output;   // [batch_size * seq_len x d_model] - Final output error
     
@@ -55,10 +55,11 @@ typedef struct {
     int d_model;      // Model dimension (feature_dim)
     int seq_len;      // Sequence length
     int batch_size;   // Batch size
+    int num_heads;    // Number of attention heads
 } Attention;
 
 // Function prototypes
-Attention* init_attention(int d_model, int seq_len, int batch_size);
+Attention* init_attention(int d_model, int seq_len, int batch_size, int num_heads);
 void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, float* X);
 float calculate_loss_attention(Attention* attn, float* y);

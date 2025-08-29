@@ -1,13 +1,14 @@
 #include "attention.h"
 
 // Initialize the attention network
-Attention* init_attention(int d_model, int seq_len, int batch_size) {
+Attention* init_attention(int d_model, int seq_len, int batch_size, int num_heads) {
     Attention* attn = (Attention*)malloc(sizeof(Attention));
     
     // Store dimensions
     attn->d_model = d_model;
     attn->seq_len = seq_len;
     attn->batch_size = batch_size;
+    attn->num_heads = num_heads;
     
     // Initialize Adam parameters
     attn->beta1 = 0.9f;
@@ -18,7 +19,7 @@ Attention* init_attention(int d_model, int seq_len, int batch_size) {
     
     int weight_size = d_model * d_model;
     int seq_size = batch_size * seq_len * d_model;
-    int attn_size = batch_size * seq_len * seq_len;
+    int attn_size = batch_size * num_heads * seq_len * seq_len;
     
     // Allocate weights and gradient accumulators
     attn->W_q = (float*)malloc(weight_size * sizeof(float));
@@ -88,6 +89,7 @@ void free_attention(Attention* attn) {
 // Forward pass
 void forward_pass_attention(Attention* attn, float* X) {
     int total_seq = attn->batch_size * attn->seq_len;
+    int d_k = attn->d_model / attn->num_heads;
     
     // Q = XW_q, K = XW_k, V = XW_v
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
@@ -108,56 +110,60 @@ void forward_pass_attention(Attention* attn, float* X) {
                 X, attn->d_model,
                 0.0f, attn->V, attn->d_model);
     
-    // Compute attention scores and weights for each batch
-    float scale = 1.0f / sqrtf(attn->d_model);
+    // Compute attention scores and weights for each batch and head
+    float scale = 1.0f / sqrtf(d_k);
     for (int batch = 0; batch < attn->batch_size; batch++) {
-        float* Q_batch = attn->Q + batch * attn->seq_len * attn->d_model;
-        float* K_batch = attn->K + batch * attn->seq_len * attn->d_model;
-        float* scores_batch = attn->attn_scores + batch * attn->seq_len * attn->seq_len;
-        float* weights_batch = attn->attn_weights + batch * attn->seq_len * attn->seq_len;
-        
-        // Attention scores = QK^T / sqrt(d_model)
-        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
-                    attn->seq_len, attn->seq_len, attn->d_model,
-                    scale, K_batch, attn->d_model,
-                    Q_batch, attn->d_model,
-                    0.0f, scores_batch, attn->seq_len);
-        
-        // Apply softmax to get attention weights
-        for (int i = 0; i < attn->seq_len; i++) {
-            float* row_scores = scores_batch + i * attn->seq_len;
-            float* row_weights = weights_batch + i * attn->seq_len;
+        for (int head = 0; head < attn->num_heads; head++) {
+            float* Q_head = attn->Q + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* K_head = attn->K + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* scores_head = attn->attn_scores + (batch * attn->num_heads + head) * attn->seq_len * attn->seq_len;
+            float* weights_head = attn->attn_weights + (batch * attn->num_heads + head) * attn->seq_len * attn->seq_len;
             
-            // Find max for numerical stability
-            float max_val = row_scores[0];
-            for (int j = 1; j < attn->seq_len; j++) {
-                if (row_scores[j] > max_val) max_val = row_scores[j];
-            }
+            // Attention scores = QK^T / sqrt(d_k)
+            cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
+                        attn->seq_len, attn->seq_len, d_k,
+                        scale, K_head, attn->d_model,
+                        Q_head, attn->d_model,
+                        0.0f, scores_head, attn->seq_len);
             
-            // Compute softmax
-            float sum = 0.0f;
-            for (int j = 0; j < attn->seq_len; j++) {
-                row_weights[j] = expf(row_scores[j] - max_val);
-                sum += row_weights[j];
-            }
-            for (int j = 0; j < attn->seq_len; j++) {
-                row_weights[j] /= sum;
+            // Apply softmax to get attention weights
+            for (int i = 0; i < attn->seq_len; i++) {
+                float* row_scores = scores_head + i * attn->seq_len;
+                float* row_weights = weights_head + i * attn->seq_len;
+                
+                // Find max for numerical stability
+                float max_val = row_scores[0];
+                for (int j = 1; j < attn->seq_len; j++) {
+                    if (row_scores[j] > max_val) max_val = row_scores[j];
+                }
+                
+                // Compute softmax
+                float sum = 0.0f;
+                for (int j = 0; j < attn->seq_len; j++) {
+                    row_weights[j] = expf(row_scores[j] - max_val);
+                    sum += row_weights[j];
+                }
+                for (int j = 0; j < attn->seq_len; j++) {
+                    row_weights[j] /= sum;
+                }
             }
         }
     }
     
-    // Compute weighted values for each batch
+    // Compute weighted values for each batch and head
     for (int batch = 0; batch < attn->batch_size; batch++) {
-        float* weights_batch = attn->attn_weights + batch * attn->seq_len * attn->seq_len;
-        float* V_batch = attn->V + batch * attn->seq_len * attn->d_model;
-        float* output_batch = attn->attn_output + batch * attn->seq_len * attn->d_model;
-        
-        // Attention output = weights * V
-        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
-                    attn->d_model, attn->seq_len, attn->seq_len,
-                    1.0f, V_batch, attn->d_model,
-                    weights_batch, attn->seq_len,
-                    0.0f, output_batch, attn->d_model);
+        for (int head = 0; head < attn->num_heads; head++) {
+            float* weights_head = attn->attn_weights + (batch * attn->num_heads + head) * attn->seq_len * attn->seq_len;
+            float* V_head = attn->V + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* output_head = attn->attn_output + batch * attn->seq_len * attn->d_model + head * d_k;
+            
+            // Attention output = weights * V
+            cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                        d_k, attn->seq_len, attn->seq_len,
+                        1.0f, V_head, attn->d_model,
+                        weights_head, attn->seq_len,
+                        0.0f, output_head, attn->d_model);
+        }
     }
     
     // Apply output projection: layer_output = attn_output * W_o
@@ -194,6 +200,7 @@ void zero_gradients_attention(Attention* attn) {
 // Backward pass
 void backward_pass_attention(Attention* attn, float* X) {
     int total_seq = attn->batch_size * attn->seq_len;
+    int d_k = attn->d_model / attn->num_heads;
     
     // ∂L/∂W_o = attn_output^T * error_output
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
@@ -209,63 +216,65 @@ void backward_pass_attention(Attention* attn, float* X) {
                 attn->error_output, attn->d_model,
                 0.0f, attn->grad_attn_out, attn->d_model);
     
-    // Backpropagate through attention for each batch
+    // Backpropagate through multi-head attention
+    float scale = 1.0f / sqrtf(d_k);
     for (int batch = 0; batch < attn->batch_size; batch++) {
-        float* d_attn_output_batch = attn->grad_attn_out + batch * attn->seq_len * attn->d_model;
-        float* attn_weights_batch = attn->attn_weights + batch * attn->seq_len * attn->seq_len;
-        float* V_batch = attn->V + batch * attn->seq_len * attn->d_model;
-        float* Q_batch = attn->Q + batch * attn->seq_len * attn->d_model;
-        float* K_batch = attn->K + batch * attn->seq_len * attn->d_model;
-        float* d_weights_batch = attn->grad_weights + batch * attn->seq_len * attn->seq_len;
-        float* d_scores_batch = attn->grad_scores + batch * attn->seq_len * attn->seq_len;
-        float* dQ_batch = attn->grad_Q + batch * attn->seq_len * attn->d_model;
-        float* dK_batch = attn->grad_K + batch * attn->seq_len * attn->d_model;
-        float* dV_batch = attn->grad_V + batch * attn->seq_len * attn->d_model;
-        
-        // ∂L/∂V = weights^T * d_attn_output
-        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
-                    attn->d_model, attn->seq_len, attn->seq_len,
-                    1.0f, d_attn_output_batch, attn->d_model,
-                    attn_weights_batch, attn->seq_len,
-                    0.0f, dV_batch, attn->d_model);
-        
-        // ∂L/∂weights = d_attn_output * V^T
-        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
-                    attn->seq_len, attn->seq_len, attn->d_model,
-                    1.0f, V_batch, attn->d_model,
-                    d_attn_output_batch, attn->d_model,
-                    0.0f, d_weights_batch, attn->seq_len);
-        
-        // Backpropagate through softmax
-        for (int i = 0; i < attn->seq_len; i++) {
-            float* weights_row = attn_weights_batch + i * attn->seq_len;
-            float* d_weights_row = d_weights_batch + i * attn->seq_len;
-            float* d_scores_row = d_scores_batch + i * attn->seq_len;
+        for (int head = 0; head < attn->num_heads; head++) {
+            float* d_attn_output_head = attn->grad_attn_out + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* weights_head = attn->attn_weights + (batch * attn->num_heads + head) * attn->seq_len * attn->seq_len;
+            float* V_head = attn->V + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* Q_head = attn->Q + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* K_head = attn->K + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* d_weights_head = attn->grad_weights + (batch * attn->num_heads + head) * attn->seq_len * attn->seq_len;
+            float* d_scores_head = attn->grad_scores + (batch * attn->num_heads + head) * attn->seq_len * attn->seq_len;
+            float* dQ_head = attn->grad_Q + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* dK_head = attn->grad_K + batch * attn->seq_len * attn->d_model + head * d_k;
+            float* dV_head = attn->grad_V + batch * attn->seq_len * attn->d_model + head * d_k;
             
-            // Softmax gradient: d_scores[i] = weights[i] * (d_weights[i] - sum_j(d_weights[j] * weights[j]))
-            float sum = 0.0f;
-            for (int j = 0; j < attn->seq_len; j++) {
-                sum += d_weights_row[j] * weights_row[j];
+            // ∂L/∂V = weights^T * d_attn_output
+            cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
+                        d_k, attn->seq_len, attn->seq_len,
+                        1.0f, d_attn_output_head, attn->d_model,
+                        weights_head, attn->seq_len,
+                        0.0f, dV_head, attn->d_model);
+            
+            // ∂L/∂weights = d_attn_output * V^T
+            cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
+                        attn->seq_len, attn->seq_len, d_k,
+                        1.0f, V_head, attn->d_model,
+                        d_attn_output_head, attn->d_model,
+                        0.0f, d_weights_head, attn->seq_len);
+            
+            // Backpropagate through softmax
+            for (int i = 0; i < attn->seq_len; i++) {
+                float* weights_row = weights_head + i * attn->seq_len;
+                float* d_weights_row = d_weights_head + i * attn->seq_len;
+                float* d_scores_row = d_scores_head + i * attn->seq_len;
+                
+                // Softmax gradient: d_scores[i] = weights[i] * (d_weights[i] - sum_j(d_weights[j] * weights[j]))
+                float sum = 0.0f;
+                for (int j = 0; j < attn->seq_len; j++) {
+                    sum += d_weights_row[j] * weights_row[j];
+                }
+                for (int j = 0; j < attn->seq_len; j++) {
+                    d_scores_row[j] = weights_row[j] * (d_weights_row[j] - sum);
+                }
             }
-            for (int j = 0; j < attn->seq_len; j++) {
-                d_scores_row[j] = weights_row[j] * (d_weights_row[j] - sum);
-            }
+            
+            // ∂L/∂Q = d_scores * K / sqrt(d_k)
+            cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                        d_k, attn->seq_len, attn->seq_len,
+                        scale, K_head, attn->d_model,
+                        d_scores_head, attn->seq_len,
+                        0.0f, dQ_head, attn->d_model);
+            
+            // ∂L/∂K = d_scores^T * Q / sqrt(d_k)
+            cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
+                        d_k, attn->seq_len, attn->seq_len,
+                        scale, Q_head, attn->d_model,
+                        d_scores_head, attn->seq_len,
+                        0.0f, dK_head, attn->d_model);
         }
-        
-        // ∂L/∂Q = d_scores * K / sqrt(d_model)
-        float scale = 1.0f / sqrtf(attn->d_model);
-        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
-                    attn->d_model, attn->seq_len, attn->seq_len,
-                    scale, K_batch, attn->d_model,
-                    d_scores_batch, attn->seq_len,
-                    0.0f, dQ_batch, attn->d_model);
-        
-        // ∂L/∂K = d_scores^T * Q / sqrt(d_model)
-        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
-                    attn->d_model, attn->seq_len, attn->seq_len,
-                    scale, Q_batch, attn->d_model,
-                    d_scores_batch, attn->seq_len,
-                    0.0f, dK_batch, attn->d_model);
     }
     
     // Accumulate weight gradients
@@ -362,6 +371,7 @@ void save_attention(Attention* attn, const char* filename) {
     fwrite(&attn->d_model, sizeof(int), 1, file);
     fwrite(&attn->seq_len, sizeof(int), 1, file);
     fwrite(&attn->batch_size, sizeof(int), 1, file);
+    fwrite(&attn->num_heads, sizeof(int), 1, file);
     
     // Save weights
     int weight_size = attn->d_model * attn->d_model;
@@ -394,16 +404,17 @@ Attention* load_attention(const char* filename, int custom_batch_size) {
     }
     
     // Read dimensions
-    int d_model, seq_len, stored_batch_size;
+    int d_model, seq_len, stored_batch_size, num_heads;
     fread(&d_model, sizeof(int), 1, file);
     fread(&seq_len, sizeof(int), 1, file);
     fread(&stored_batch_size, sizeof(int), 1, file);
+    fread(&num_heads, sizeof(int), 1, file);
     
     // Use custom_batch_size if provided, otherwise use stored value
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
     // Initialize network
-    Attention* attn = init_attention(d_model, seq_len, batch_size);
+    Attention* attn = init_attention(d_model, seq_len, batch_size, num_heads);
     
     // Load weights
     int weight_size = d_model * d_model;
