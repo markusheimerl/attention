@@ -287,7 +287,7 @@ void zero_gradients_attention(Attention* attn) {
 }
 
 // Backward pass
-void backward_pass_attention(Attention* attn, float* X) {
+void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
     int total_seq = attn->batch_size * attn->seq_len;
     
     // ∂L/∂Wo = Z^T(∂L/∂Y) - Output projection weight gradient
@@ -379,6 +379,29 @@ void backward_pass_attention(Attention* attn, float* X) {
                 1.0f, attn->grad_V, attn->d_model,
                 X, attn->d_model,
                 1.0f, attn->W_v_grad, attn->d_model);
+
+    if (grad_X != NULL) {
+        // ∂L/∂X = (∂L/∂Q)W_q^T
+        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
+                    attn->d_model, total_seq, attn->d_model,
+                    1.0f, attn->W_q, attn->d_model,
+                    attn->grad_Q, attn->d_model,
+                    1.0f, grad_X, attn->d_model);
+        
+        // ∂L/∂X += (∂L/∂K)W_k^T
+        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
+                    attn->d_model, total_seq, attn->d_model,
+                    1.0f, attn->W_k, attn->d_model,
+                    attn->grad_K, attn->d_model,
+                    1.0f, grad_X, attn->d_model);
+        
+        // ∂L/∂X += (∂L/∂V)W_v^T
+        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
+                    attn->d_model, total_seq, attn->d_model,
+                    1.0f, attn->W_v, attn->d_model,
+                    attn->grad_V, attn->d_model,
+                    1.0f, grad_X, attn->d_model);
+    }
 }
 
 // Update weights using AdamW

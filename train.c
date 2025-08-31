@@ -37,7 +37,7 @@ void train_model(Attention* attn, float* X, float* y, int num_samples, int batch
 
             if (epoch < num_epochs) {
                 zero_gradients_attention(attn);
-                backward_pass_attention(attn, X_batch);
+                backward_pass_attention(attn, X_batch, NULL);
                 update_weights_attention(attn, learning_rate);
             }
         }

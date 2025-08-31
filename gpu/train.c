@@ -46,7 +46,7 @@ void train_model(Attention* attn, float* X, float* y, int num_samples, int batch
 
             if (epoch < num_epochs) {
                 zero_gradients_attention(attn);
-                backward_pass_attention(attn, d_X);
+                backward_pass_attention(attn, d_X, NULL);
                 update_weights_attention(attn, learning_rate);
             }
         }
@@ -229,7 +229,7 @@ int main() {
     generate_attention_data(&X, &y, num_samples, seq_len, feature_dim);
     print_data_samples(X, y, seq_len, feature_dim);
     
-    Attention* attn = init_attention(feature_dim, seq_len, batch_size, cublas_handle, false);
+    Attention* attn = init_attention(feature_dim, seq_len, batch_size, false, cublas_handle);
     train_model(attn, X, y, num_samples, batch_size, 50, 0.001f);
 
     // Get timestamp and save

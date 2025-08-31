@@ -344,7 +344,7 @@ void zero_gradients_attention(Attention* attn) {
 }
 
 // Backward pass
-void backward_pass_attention(Attention* attn, float* d_X) {
+void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
     int total_seq = attn->batch_size * attn->seq_len;
@@ -463,6 +463,32 @@ void backward_pass_attention(Attention* attn, float* d_X) {
                             &alpha, attn->d_grad_V, attn->d_model,
                             d_X, attn->d_model,
                             &alpha, attn->d_W_v_grad, attn->d_model));
+
+    if (d_grad_X != NULL) {
+        // ∂L/∂X = (∂L/∂Q)W_q^T
+        CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                CUBLAS_OP_T, CUBLAS_OP_N,
+                                attn->d_model, total_seq, attn->d_model,
+                                &alpha, attn->d_W_q, attn->d_model,
+                                attn->d_grad_Q, attn->d_model,
+                                &alpha, d_grad_X, attn->d_model));
+        
+        // ∂L/∂X += (∂L/∂K)W_k^T
+        CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                CUBLAS_OP_T, CUBLAS_OP_N,
+                                attn->d_model, total_seq, attn->d_model,
+                                &alpha, attn->d_W_k, attn->d_model,
+                                attn->d_grad_K, attn->d_model,
+                                &alpha, d_grad_X, attn->d_model));
+        
+        // ∂L/∂X += (∂L/∂V)W_v^T
+        CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
+                                CUBLAS_OP_T, CUBLAS_OP_N,
+                                attn->d_model, total_seq, attn->d_model,
+                                &alpha, attn->d_W_v, attn->d_model,
+                                attn->d_grad_V, attn->d_model,
+                                &alpha, d_grad_X, attn->d_model));
+    }
 }
 
 // CUDA kernel for AdamW update

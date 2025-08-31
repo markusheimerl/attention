@@ -65,7 +65,7 @@ void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, float* X);
 float calculate_loss_attention(Attention* attn, float* y);
 void zero_gradients_attention(Attention* attn);
-void backward_pass_attention(Attention* attn, float* X);
+void backward_pass_attention(Attention* attn, float* X, float* grad_X);
 void update_weights_attention(Attention* attn, float learning_rate);
 void save_attention(Attention* attn, const char* filename);
 Attention* load_attention(const char* filename, int custom_batch_size);
