@@ -386,7 +386,7 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
                     attn->d_model, total_seq, attn->d_model,
                     1.0f, attn->W_q, attn->d_model,
                     attn->grad_Q, attn->d_model,
-                    1.0f, grad_X, attn->d_model);
+                    0.0f, grad_X, attn->d_model);
         
         // ∂L/∂X += (∂L/∂K)W_k^T
         cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,

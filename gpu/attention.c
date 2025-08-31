@@ -471,7 +471,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                 attn->d_model, total_seq, attn->d_model,
                                 &alpha, attn->d_W_q, attn->d_model,
                                 attn->d_grad_Q, attn->d_model,
-                                &alpha, d_grad_X, attn->d_model));
+                                &beta, d_grad_X, attn->d_model));
         
         // ∂L/∂X += (∂L/∂K)W_k^T
         CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
