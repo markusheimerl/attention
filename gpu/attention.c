@@ -260,7 +260,7 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                             d_X, attn->d_model,
                             &beta, attn->d_V, attn->d_model));
     
-    // S = QK^T / √d_model using batched GEMM - Scaled attention scores: measure compatibility between queries and keys
+    // S = QKᵀ / √d_model using batched GEMM - Scaled attention scores: measure compatibility between queries and keys
     float scale = 1.0f / sqrtf(attn->d_model);
     long long int strideA = (long long int)attn->seq_len * attn->d_model;  // Stride between Q matrices for each batch
     long long int strideB = (long long int)attn->seq_len * attn->d_model;  // Stride between K matrices for each batch
@@ -349,7 +349,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     const float beta = 0.0f;
     int total_seq = attn->batch_size * attn->seq_len;
     
-    // ∂L/∂Wo = Z^T(∂L/∂Y) - Output projection weight gradient
+    // ∂L/∂Wo = Zᵀ(∂L/∂Y) - Output projection weight gradient
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_T,
                             attn->d_model, attn->d_model, total_seq,
@@ -357,7 +357,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                             attn->d_attn_output, attn->d_model,
                             &alpha, attn->d_W_o_grad, attn->d_model));
     
-    // ∂L/∂Z = (∂L/∂Y)Wo^T - Gradient w.r.t. attention output
+    // ∂L/∂Z = (∂L/∂Y)Woᵀ - Gradient w.r.t. attention output
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_T, CUBLAS_OP_N,
                             attn->d_model, total_seq, attn->d_model,
@@ -365,7 +365,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                             attn->d_error_output, attn->d_model,
                             &beta, attn->d_grad_attn_out, attn->d_model));
     
-    // ∂L/∂V = A^T(∂L/∂Z) using batched GEMM - Gradient w.r.t. values
+    // ∂L/∂V = Aᵀ(∂L/∂Z) using batched GEMM - Gradient w.r.t. values
     long long int strideA = (long long int)attn->seq_len * attn->d_model;  // Stride between grad_attn_out matrices
     long long int strideB = (long long int)attn->seq_len * attn->seq_len;  // Stride between attention weight matrices
     long long int strideC = (long long int)attn->seq_len * attn->d_model;  // Stride between grad_V matrices
@@ -380,7 +380,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                           attn->d_grad_V, attn->d_model, strideC,
                                           attn->batch_size));
     
-    // ∂L/∂A = (∂L/∂Z)V^T using batched GEMM - Gradient w.r.t. attention weights
+    // ∂L/∂A = (∂L/∂Z)Vᵀ using batched GEMM - Gradient w.r.t. attention weights
     strideA = (long long int)attn->seq_len * attn->d_model;  // Stride between V matrices
     strideB = (long long int)attn->seq_len * attn->d_model;  // Stride between grad_attn_out matrices
     strideC = (long long int)attn->seq_len * attn->seq_len;  // Stride between grad_weights matrices
@@ -424,7 +424,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                           attn->d_grad_Q, attn->d_model, strideC,
                                           attn->batch_size));
     
-    // ∂L/∂K = (∂L/∂S)^TQ / √d_model using batched GEMM - Gradient w.r.t. keys
+    // ∂L/∂K = (∂L/∂S)ᵀQ / √d_model using batched GEMM - Gradient w.r.t. keys
     strideA = (long long int)attn->seq_len * attn->d_model;  // Stride between Q matrices
     strideB = (long long int)attn->seq_len * attn->seq_len;  // Stride between grad_scores matrices
     strideC = (long long int)attn->seq_len * attn->d_model;  // Stride between grad_K matrices
@@ -440,7 +440,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                           attn->batch_size));
     
     // Accumulate weight gradients
-    // ∂L/∂Wq = X^T(∂L/∂Q) - Query weight gradient
+    // ∂L/∂Wq = Xᵀ(∂L/∂Q) - Query weight gradient
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_T,
                             attn->d_model, attn->d_model, total_seq,
@@ -448,7 +448,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                             d_X, attn->d_model,
                             &alpha, attn->d_W_q_grad, attn->d_model));
     
-    // ∂L/∂Wk = X^T(∂L/∂K) - Key weight gradient
+    // ∂L/∂Wk = Xᵀ(∂L/∂K) - Key weight gradient
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_T,
                             attn->d_model, attn->d_model, total_seq,
@@ -456,7 +456,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                             d_X, attn->d_model,
                             &alpha, attn->d_W_k_grad, attn->d_model));
     
-    // ∂L/∂Wv = X^T(∂L/∂V) - Value weight gradient
+    // ∂L/∂Wv = Xᵀ(∂L/∂V) - Value weight gradient
     CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                             CUBLAS_OP_N, CUBLAS_OP_T,
                             attn->d_model, attn->d_model, total_seq,
@@ -465,7 +465,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                             &alpha, attn->d_W_v_grad, attn->d_model));
 
     if (d_grad_X != NULL) {
-        // ∂L/∂X = (∂L/∂Q)W_q^T
+        // ∂L/∂X = (∂L/∂Q)W_qᵀ
         CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                                 CUBLAS_OP_T, CUBLAS_OP_N,
                                 attn->d_model, total_seq, attn->d_model,
@@ -473,7 +473,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                 attn->d_grad_Q, attn->d_model,
                                 &beta, d_grad_X, attn->d_model));
         
-        // ∂L/∂X += (∂L/∂K)W_k^T
+        // ∂L/∂X += (∂L/∂K)W_kᵀ
         CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                                 CUBLAS_OP_T, CUBLAS_OP_N,
                                 attn->d_model, total_seq, attn->d_model,
@@ -481,7 +481,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                 attn->d_grad_K, attn->d_model,
                                 &alpha, d_grad_X, attn->d_model));
         
-        // ∂L/∂X += (∂L/∂V)W_v^T
+        // ∂L/∂X += (∂L/∂V)W_vᵀ
         CHECK_CUBLAS(cublasSgemm(attn->cublas_handle,
                                 CUBLAS_OP_T, CUBLAS_OP_N,
                                 attn->d_model, total_seq, attn->d_model,

@@ -222,7 +222,7 @@ void forward_pass_attention(Attention* attn, float* X) {
         float* scores_batch = attn->attn_scores + batch * attn->seq_len * attn->seq_len;
         float* weights_batch = attn->attn_weights + batch * attn->seq_len * attn->seq_len;
         
-        // S = QK^T / √d_model - Scaled attention scores: measure compatibility between queries and keys
+        // S = QKᵀ / √d_model - Scaled attention scores: measure compatibility between queries and keys
         cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
                     attn->seq_len, attn->seq_len, attn->d_model,
                     scale, K_batch, attn->d_model,
@@ -290,14 +290,14 @@ void zero_gradients_attention(Attention* attn) {
 void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
     int total_seq = attn->batch_size * attn->seq_len;
     
-    // ∂L/∂Wo = Z^T(∂L/∂Y) - Output projection weight gradient
+    // ∂L/∂Wo = Zᵀ(∂L/∂Y) - Output projection weight gradient
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                 attn->d_model, attn->d_model, total_seq,
                 1.0f, attn->error_output, attn->d_model,
                 attn->attn_output, attn->d_model,
                 1.0f, attn->W_o_grad, attn->d_model);
     
-    // ∂L/∂Z = (∂L/∂Y)Wo^T - Gradient w.r.t. attention output
+    // ∂L/∂Z = (∂L/∂Y)Woᵀ - Gradient w.r.t. attention output
     cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
                 attn->d_model, total_seq, attn->d_model,
                 1.0f, attn->W_o, attn->d_model,
@@ -317,14 +317,14 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
         float* dK_batch = attn->grad_K + batch * attn->seq_len * attn->d_model;
         float* dV_batch = attn->grad_V + batch * attn->seq_len * attn->d_model;
         
-        // ∂L/∂V = A^T(∂L/∂Z) - Gradient w.r.t. values
+        // ∂L/∂V = Aᵀ(∂L/∂Z) - Gradient w.r.t. values
         cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                     attn->d_model, attn->seq_len, attn->seq_len,
                     1.0f, d_attn_output_batch, attn->d_model,
                     attn_weights_batch, attn->seq_len,
                     0.0f, dV_batch, attn->d_model);
         
-        // ∂L/∂A = (∂L/∂Z)V^T - Gradient w.r.t. attention weights
+        // ∂L/∂A = (∂L/∂Z)Vᵀ - Gradient w.r.t. attention weights
         cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
                     attn->seq_len, attn->seq_len, attn->d_model,
                     1.0f, V_batch, attn->d_model,
@@ -350,7 +350,7 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
                     d_scores_batch, attn->seq_len,
                     0.0f, dQ_batch, attn->d_model);
         
-        // ∂L/∂K = (∂L/∂S)^TQ / √d_model - Gradient w.r.t. keys
+        // ∂L/∂K = (∂L/∂S)ᵀQ / √d_model - Gradient w.r.t. keys
         cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                     attn->d_model, attn->seq_len, attn->seq_len,
                     scale, Q_batch, attn->d_model,
@@ -359,21 +359,21 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
     }
     
     // Accumulate weight gradients
-    // ∂L/∂Wq = X^T(∂L/∂Q) - Query weight gradient
+    // ∂L/∂Wq = Xᵀ(∂L/∂Q) - Query weight gradient
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                 attn->d_model, attn->d_model, total_seq,
                 1.0f, attn->grad_Q, attn->d_model,
                 X, attn->d_model,
                 1.0f, attn->W_q_grad, attn->d_model);
     
-    // ∂L/∂Wk = X^T(∂L/∂K) - Key weight gradient
+    // ∂L/∂Wk = Xᵀ(∂L/∂K) - Key weight gradient
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                 attn->d_model, attn->d_model, total_seq,
                 1.0f, attn->grad_K, attn->d_model,
                 X, attn->d_model,
                 1.0f, attn->W_k_grad, attn->d_model);
     
-    // ∂L/∂Wv = X^T(∂L/∂V) - Value weight gradient
+    // ∂L/∂Wv = Xᵀ(∂L/∂V) - Value weight gradient
     cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
                 attn->d_model, attn->d_model, total_seq,
                 1.0f, attn->grad_V, attn->d_model,
@@ -381,21 +381,21 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
                 1.0f, attn->W_v_grad, attn->d_model);
 
     if (grad_X != NULL) {
-        // ∂L/∂X = (∂L/∂Q)W_q^T
+        // ∂L/∂X = (∂L/∂Q)W_qᵀ
         cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
                     attn->d_model, total_seq, attn->d_model,
                     1.0f, attn->W_q, attn->d_model,
                     attn->grad_Q, attn->d_model,
                     0.0f, grad_X, attn->d_model);
         
-        // ∂L/∂X += (∂L/∂K)W_k^T
+        // ∂L/∂X += (∂L/∂K)W_kᵀ
         cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
                     attn->d_model, total_seq, attn->d_model,
                     1.0f, attn->W_k, attn->d_model,
                     attn->grad_K, attn->d_model,
                     1.0f, grad_X, attn->d_model);
         
-        // ∂L/∂X += (∂L/∂V)W_v^T
+        // ∂L/∂X += (∂L/∂V)W_vᵀ
         cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
                     attn->d_model, total_seq, attn->d_model,
                     1.0f, attn->W_v, attn->d_model,
