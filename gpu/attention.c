@@ -1,13 +1,14 @@
 #include "attention.h"
 
 // Initialize the attention network
-Attention* init_attention(int d_model, int seq_len, int batch_size, cublasHandle_t cublas_handle) {
+Attention* init_attention(int d_model, int seq_len, int batch_size, bool is_causal, cublasHandle_t cublas_handle) {
     Attention* attn = (Attention*)malloc(sizeof(Attention));
     
     // Store dimensions
     attn->d_model = d_model;
     attn->seq_len = seq_len;
     attn->batch_size = batch_size;
+    attn->is_causal = is_causal;
     
     // Initialize Adam parameters
     attn->beta1 = 0.9f;
@@ -164,6 +165,71 @@ __global__ void softmax_backward_kernel_attention(float* grad_scores, float* gra
     }
 }
 
+// CUDA kernel for causal softmax forward pass
+__global__ void softmax_causal_forward_kernel_attention(float* weights, float* scores, int batch_size, int seq_len) {
+    int batch = blockIdx.x;
+    int row = threadIdx.x;
+    
+    if (batch < batch_size && row < seq_len) {
+        int offset = batch * seq_len * seq_len + row * seq_len;
+        float* row_scores = scores + offset;
+        float* row_weights = weights + offset;
+        
+        // Find max for numerical stability (only consider positions <= row for causal mask)
+        float max_val = row_scores[0];
+        for (int j = 1; j <= row; j++) {
+            if (row_scores[j] > max_val) max_val = row_scores[j];
+        }
+        
+        // Compute softmax with causal masking
+        float sum = 0.0f;
+        for (int j = 0; j < seq_len; j++) {
+            if (j <= row) {
+                // Attend to current and previous positions
+                row_weights[j] = expf(row_scores[j] - max_val);
+                sum += row_weights[j];
+            } else {
+                // Mask future positions
+                row_weights[j] = 0.0f;
+            }
+        }
+        
+        // Normalize
+        for (int j = 0; j <= row; j++) {
+            row_weights[j] /= sum;
+        }
+    }
+}
+
+// CUDA kernel for causal softmax backward pass
+__global__ void softmax_causal_backward_kernel_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len) {
+    int batch = blockIdx.x;
+    int row = threadIdx.x;
+    
+    if (batch < batch_size && row < seq_len) {
+        int offset = batch * seq_len * seq_len + row * seq_len;
+        float* weights_row = weights + offset;
+        float* grad_weights_row = grad_weights + offset;
+        float* grad_scores_row = grad_scores + offset;
+        
+        // Softmax gradient with causal masking
+        float sum = 0.0f;
+        for (int j = 0; j <= row; j++) {
+            sum += grad_weights_row[j] * weights_row[j];
+        }
+        
+        for (int j = 0; j < seq_len; j++) {
+            if (j <= row) {
+                // Gradient for non-masked positions
+                grad_scores_row[j] = weights_row[j] * (grad_weights_row[j] - sum);
+            } else {
+                // Zero gradient for masked (future) positions
+                grad_scores_row[j] = 0.0f;
+            }
+        }
+    }
+}
+
 // Forward pass
 void forward_pass_attention(Attention* attn, float* d_X) {
     const float alpha = 1.0f;
@@ -213,9 +279,15 @@ void forward_pass_attention(Attention* attn, float* d_X) {
     // A_ij = exp(S_ij) / Σ_k exp(S_ik) - Softmax normalization: produces attention weights
     dim3 grid(attn->batch_size);
     dim3 block(attn->seq_len);
-    softmax_forward_kernel_attention<<<grid, block>>>(
-        attn->d_attn_weights, attn->d_attn_scores, attn->batch_size, attn->seq_len
-    );
+    if (attn->is_causal) {
+        softmax_causal_forward_kernel_attention<<<grid, block>>>(
+            attn->d_attn_weights, attn->d_attn_scores, attn->batch_size, attn->seq_len
+        );
+    } else {
+        softmax_forward_kernel_attention<<<grid, block>>>(
+            attn->d_attn_weights, attn->d_attn_scores, attn->batch_size, attn->seq_len
+        );
+    }
     
     // Z = AV using batched GEMM - Weighted combination: attention output as weighted sum of values
     strideA = (long long int)attn->seq_len * attn->d_model;  // Stride between V matrices for each batch
@@ -326,9 +398,15 @@ void backward_pass_attention(Attention* attn, float* d_X) {
     // ∂L/∂S_ij = A_ij(∂L/∂A_ij - Σ_k ∂L/∂A_ikA_ik) - Softmax backward pass
     dim3 grid(attn->batch_size);
     dim3 block(attn->seq_len);
-    softmax_backward_kernel_attention<<<grid, block>>>(
-        attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->seq_len
-    );
+    if (attn->is_causal) {
+        softmax_causal_backward_kernel_attention<<<grid, block>>>(
+            attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->seq_len
+        );
+    } else {
+        softmax_backward_kernel_attention<<<grid, block>>>(
+            attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->seq_len
+        );
+    }
     
     // ∂L/∂Q = (∂L/∂S)K / √d_model using batched GEMM - Gradient w.r.t. queries
     float scale = 1.0f / sqrtf(attn->d_model);
@@ -460,6 +538,7 @@ void save_attention(Attention* attn, const char* filename) {
     fwrite(&attn->d_model, sizeof(int), 1, file);
     fwrite(&attn->seq_len, sizeof(int), 1, file);
     fwrite(&attn->batch_size, sizeof(int), 1, file);
+    fwrite(&attn->is_causal, sizeof(bool), 1, file);
     
     // Save weights
     int weight_size = attn->d_model * attn->d_model;
@@ -532,14 +611,16 @@ Attention* load_attention(const char* filename, int custom_batch_size, cublasHan
     
     // Read dimensions
     int d_model, seq_len, stored_batch_size;
+    bool is_causal;
     fread(&d_model, sizeof(int), 1, file);
     fread(&seq_len, sizeof(int), 1, file);
     fread(&stored_batch_size, sizeof(int), 1, file);
+    fread(&is_causal, sizeof(bool), 1, file);
     
     // Use custom_batch_size if provided, otherwise use stored value
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
-    Attention* attn = init_attention(d_model, seq_len, batch_size, cublas_handle);
+    Attention* attn = init_attention(d_model, seq_len, batch_size, is_causal, cublas_handle);
     
     // Load weights
     int weight_size = d_model * d_model;

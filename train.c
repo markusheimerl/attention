@@ -180,7 +180,7 @@ int main() {
     generate_attention_data(&X, &y, num_samples, seq_len, feature_dim);
     print_data_samples(X, y, seq_len, feature_dim);
     
-    Attention* attn = init_attention(feature_dim, seq_len, batch_size);
+    Attention* attn = init_attention(feature_dim, seq_len, batch_size, false);
     train_model(attn, X, y, num_samples, batch_size, 50, 0.001f);
 
     // Get timestamp and save

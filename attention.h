@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdbool.h>
 #include <cblas.h>
 
 typedef struct {
@@ -55,10 +56,11 @@ typedef struct {
     int d_model;      // Model dimension (feature_dim)
     int seq_len;      // Sequence length
     int batch_size;   // Batch size
+    bool is_causal;   // Whether to use causal attention
 } Attention;
 
 // Function prototypes
-Attention* init_attention(int d_model, int seq_len, int batch_size);
+Attention* init_attention(int d_model, int seq_len, int batch_size, bool is_causal);
 void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, float* X);
 float calculate_loss_attention(Attention* attn, float* y);

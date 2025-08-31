@@ -83,6 +83,7 @@ typedef struct {
     int d_model;      // Model dimension (feature_dim)
     int seq_len;      // Sequence length
     int batch_size;   // Batch size
+    bool is_causal;   // Whether to use causal attention
 } Attention;
 
 // CUDA kernel prototypes
@@ -91,7 +92,7 @@ __global__ void softmax_backward_kernel_attention(float* grad_scores, float* gra
 __global__ void adamw_update_kernel_attention(float* weight, float* grad, float* m, float* v, float beta1, float beta2, float epsilon, float learning_rate, float weight_decay, float alpha_t, int size, int total_seq);
 
 // Function prototypes
-Attention* init_attention(int d_model, int seq_len, int batch_size, cublasHandle_t cublas_handle);
+Attention* init_attention(int d_model, int seq_len, int batch_size, bool is_causal, cublasHandle_t cublas_handle);
 void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, float* d_X);
 float calculate_loss_attention(Attention* attn, float* d_y);
