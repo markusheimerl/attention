@@ -18,7 +18,7 @@ int main() {
     
     // Generate synthetic data
     float *X, *y;
-    generate_attention_data(&X, &y, num_samples, seq_len, feature_dim);
+    generate_data(&X, &y, num_samples, seq_len, feature_dim);
 
     // Initialize network
     Attention* attn = init_attention(feature_dim, seq_len, batch_size, false);

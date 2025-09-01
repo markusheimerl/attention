@@ -1,6 +1,6 @@
 #include "data.h"
 
-void generate_attention_data(float** X, float** y, int num_samples, int seq_len, int feature_dim) {
+void generate_data(float** X, float** y, int num_samples, int seq_len, int feature_dim) {
     *X = (float*)malloc(num_samples * seq_len * feature_dim * sizeof(float));
     *y = (float*)malloc(num_samples * seq_len * feature_dim * sizeof(float));
     
@@ -59,39 +59,4 @@ void save_data(float* X, float* y, int num_samples, int seq_len, int feature_dim
     
     fclose(file);
     printf("Data saved to %s\n", filename);
-}
-
-void print_sample_data(float* X, float* y, int sample_idx, int seq_len, int feature_dim) {
-    int base = sample_idx * seq_len * feature_dim;
-    
-    printf("Sample %d Input:\n", sample_idx);
-    for (int seq = 0; seq < seq_len; seq++) {
-        printf("  [");
-        for (int feat = 0; feat < feature_dim; feat++) {
-            printf("%6.2f", X[base + seq * feature_dim + feat]);
-            if (feat < feature_dim - 1) printf(", ");
-        }
-        printf("]\n");
-    }
-    
-    // Find max row
-    int max_row = 0;
-    float max_val = X[base];
-    for (int seq = 1; seq < seq_len; seq++) {
-        if (X[base + seq * feature_dim] > max_val) {
-            max_val = X[base + seq * feature_dim];
-            max_row = seq;
-        }
-    }
-    
-    printf("Max row: %d (%.2f), Output:\n", max_row, max_val);
-    for (int seq = 0; seq < seq_len; seq++) {
-        printf("  [");
-        for (int feat = 0; feat < feature_dim; feat++) {
-            printf("%6.2f", y[base + seq * feature_dim + feat]);
-            if (feat < feature_dim - 1) printf(", ");
-        }
-        printf("]\n");
-    }
-    printf("\n");
 }
