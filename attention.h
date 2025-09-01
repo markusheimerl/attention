@@ -5,62 +5,62 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <stdbool.h>
 #include <cblas.h>
 
 typedef struct {
-    // Weights and gradients
-    float* W_q;      // [d_model x d_model] - Query weights
-    float* W_k;      // [d_model x d_model] - Key weights  
-    float* W_v;      // [d_model x d_model] - Value weights
-    float* W_o;      // [d_model x d_model] - Output weights
-    float* W_q_grad; // [d_model x d_model] - Gradient accumulator
-    float* W_k_grad; // [d_model x d_model] - Gradient accumulator
-    float* W_v_grad; // [d_model x d_model] - Gradient accumulator
-    float* W_o_grad; // [d_model x d_model] - Gradient accumulator
+    // Query, Key, Value projection weights
+    float* WQ;      // [d_model x d_model]
+    float* WK;      // [d_model x d_model]
+    float* WV;      // [d_model x d_model]
+    float* WO;      // [d_model x d_model]
+    
+    // Gradients
+    float* WQ_grad; // [d_model x d_model]
+    float* WK_grad; // [d_model x d_model]
+    float* WV_grad; // [d_model x d_model]
+    float* WO_grad; // [d_model x d_model]
     
     // Adam parameters
-    float* W_q_m;    // First moment estimates for W_q
-    float* W_q_v;    // Second moment estimates for W_q
-    float* W_k_m;    // First moment estimates for W_k
-    float* W_k_v;    // Second moment estimates for W_k
-    float* W_v_m;    // First moment estimates for W_v
-    float* W_v_v;    // Second moment estimates for W_v
-    float* W_o_m;    // First moment estimates for W_o
-    float* W_o_v;    // Second moment estimates for W_o
-    float beta1;     // Exponential decay rate for first moment estimates
-    float beta2;     // Exponential decay rate for second moment estimates
-    float epsilon;   // Small constant for numerical stability
-    int t;           // Time step
-    float weight_decay; // Weight decay parameter for AdamW regularization
+    float* WQ_m;    // First moment for WQ
+    float* WQ_v;    // Second moment for WQ
+    float* WK_m;    // First moment for WK
+    float* WK_v;    // Second moment for WK
+    float* WV_m;    // First moment for WV
+    float* WV_v;    // Second moment for WV
+    float* WO_m;    // First moment for WO
+    float* WO_v;    // Second moment for WO
+    float beta1;      // Exponential decay rate for first moment
+    float beta2;      // Exponential decay rate for second moment
+    float epsilon;    // Small constant for numerical stability
+    int t;            // Time step
+    float weight_decay; // Weight decay parameter for AdamW
     
-    // Forward pass buffers
-    float* Q;              // [batch_size * seq_len x d_model] - Query activations
-    float* K;              // [batch_size * seq_len x d_model] - Key activations
-    float* V;              // [batch_size * seq_len x d_model] - Value activations
-    float* attn_scores;    // [batch_size * seq_len x seq_len] - Raw attention scores
-    float* attn_weights;   // [batch_size * seq_len x seq_len] - Softmax attention weights
-    float* attn_output;    // [batch_size * seq_len x d_model] - Weighted value sum
-    float* layer_output;   // [batch_size * seq_len x d_model] - Final output after W_o
+    // Working buffers
+    float* Q;           // [d_model x seq_len x batch_size]
+    float* K;           // [d_model x seq_len x batch_size]
+    float* V;           // [d_model x seq_len x batch_size]
+    float* scores;      // [seq_len x seq_len x batch_size]
+    float* attn_weights; // [seq_len x seq_len x batch_size]
+    float* attn_output;  // [d_model x seq_len x batch_size]
+    float* layer_output; // [d_model x seq_len x batch_size]
     
-    // Backward pass buffers
-    float* grad_Q;         // [batch_size * seq_len x d_model] - Gradient w.r.t. Q
-    float* grad_K;         // [batch_size * seq_len x d_model] - Gradient w.r.t. K
-    float* grad_V;         // [batch_size * seq_len x d_model] - Gradient w.r.t. V
-    float* grad_scores;    // [batch_size * seq_len x seq_len] - Gradient w.r.t. scores
-    float* grad_weights;   // [batch_size * seq_len x seq_len] - Gradient w.r.t. weights
-    float* grad_attn_out;  // [batch_size * seq_len x d_model] - Gradient w.r.t. attention output
-    float* error_output;   // [batch_size * seq_len x d_model] - Final output error
+    // Error buffers
+    float* error_output;      // [d_model x seq_len x batch_size]
+    float* error_attn_output; // [d_model x seq_len x batch_size]
+    float* error_attn_weights;// [seq_len x seq_len x batch_size]
+    float* error_scores;      // [seq_len x seq_len x batch_size]
+    float* error_V;           // [d_model x seq_len x batch_size]
+    float* error_K;           // [d_model x seq_len x batch_size]
+    float* error_Q;           // [d_model x seq_len x batch_size]
     
     // Dimensions
-    int d_model;      // Model dimension (feature_dim)
-    int seq_len;      // Sequence length
-    int batch_size;   // Batch size
-    bool is_causal;   // Whether to use causal attention
+    int d_model;
+    int seq_len;
+    int batch_size;
 } Attention;
 
 // Function prototypes
-Attention* init_attention(int d_model, int seq_len, int batch_size, bool is_causal);
+Attention* init_attention(int d_model, int seq_len, int batch_size);
 void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, float* X);
 float calculate_loss_attention(Attention* attn, float* y);
