@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-void generate_sequence_data(float** X, float** y, int num_samples, int seq_len, int d_model, float range_min, float range_max);
-void save_sequence_data(float* X, float* y, int num_samples, int seq_len, int d_model, const char* filename);
+void generate_data(float** X, float** y, int num_samples, int input_dim, int output_dim, float range_min, float range_max);
+void save_data(float* X, float* y, int num_samples, int input_dim, int output_dim, const char* filename);
 
 #endif
