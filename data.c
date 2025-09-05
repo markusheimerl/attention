@@ -1,8 +1,8 @@
 #include "data.h"
 
-void generate_attention_data(float** X, float** y, int seq_len, int batch_size, int d_model,
+void generate_attention_data(float** X, float** y, int seq_len, int num_samples, int d_model,
                            float range_min, float range_max) {
-    const int ncols = d_model * batch_size;
+    const int ncols = d_model * num_samples;
     const int total = seq_len * ncols;
     
     *X = (float*)malloc(total * sizeof(float));
@@ -13,11 +13,11 @@ void generate_attention_data(float** X, float** y, int seq_len, int batch_size, 
     for (int i = 0; i < total; i++) {
         (*X)[i] = range_min + ((float)rand() / RAND_MAX) * range;
     }
-
-    // Create attention matrix A
+    
+    // Create attention matrix A: [seq_len × seq_len]
     float* A = (float*)malloc(seq_len * seq_len * sizeof(float));
     float a_scale = 1.0f / sqrtf(seq_len);
-
+    
     for (int i = 0; i < seq_len * seq_len; i++) {
         A[i] = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * a_scale;
     }
@@ -58,43 +58,43 @@ void generate_attention_data(float** X, float** y, int seq_len, int batch_size, 
     
     free(A);
     
-    printf("Generated attention data: %d sequences, length %d, d_model %d\n", 
-           batch_size, seq_len, d_model);
+    printf("Generated attention data: %d samples, length %d, d_model %d\n", 
+           num_samples, seq_len, d_model);
 }
 
-void save_data(float* X, float* y, int seq_len, int batch_size, int d_model,
+void save_data(float* X, float* y, int seq_len, int num_samples, int d_model,
                const char* filename) {
     FILE* f = fopen(filename, "w");
     if (!f) return;
     
-    const int ncols = d_model * batch_size;
+    const int ncols = d_model * num_samples;
     
     // Header
     for (int d = 0; d < d_model; d++) {
-        for (int b = 0; b < batch_size; b++) {
-            fprintf(f, "x_d%d_b%d,", d, b);
+        for (int s = 0; s < num_samples; s++) {
+            fprintf(f, "x_d%d_s%d,", d, s);
         }
     }
     for (int d = 0; d < d_model; d++) {
-        for (int b = 0; b < batch_size; b++) {
-            fprintf(f, "y_d%d_b%d%s", d, b, 
-                   (d == d_model-1 && b == batch_size-1) ? "\n" : ",");
+        for (int s = 0; s < num_samples; s++) {
+            fprintf(f, "y_d%d_s%d%s", d, s, 
+                   (d == d_model-1 && s == num_samples-1) ? "\n" : ",");
         }
     }
     
     // Data
     for (int t = 0; t < seq_len; t++) {
         for (int d = 0; d < d_model; d++) {
-            for (int b = 0; b < batch_size; b++) {
-                int c = d * batch_size + b;
+            for (int s = 0; s < num_samples; s++) {
+                int c = d * num_samples + s;
                 fprintf(f, "%.6f,", X[t + seq_len * c]);
             }
         }
         for (int d = 0; d < d_model; d++) {
-            for (int b = 0; b < batch_size; b++) {
-                int c = d * batch_size + b;
+            for (int s = 0; s < num_samples; s++) {
+                int c = d * num_samples + s;
                 fprintf(f, "%.6f%s", y[t + seq_len * c],
-                       (d == d_model-1 && b == batch_size-1) ? "\n" : ",");
+                       (d == d_model-1 && s == num_samples-1) ? "\n" : ",");
             }
         }
     }

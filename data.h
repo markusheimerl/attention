@@ -6,9 +6,9 @@
 #include <math.h>
 #include <cblas.h>
 
-void generate_attention_data(float** X, float** y, int seq_len, int batch_size, int d_model,
+void generate_attention_data(float** X, float** y, int seq_len, int num_samples, int d_model,
                            float range_min, float range_max);
-void save_data(float* X, float* y, int seq_len, int batch_size, int d_model,
+void save_data(float* X, float* y, int seq_len, int num_samples, int d_model,
                const char* filename);
 
 #endif
