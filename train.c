@@ -9,14 +9,14 @@
 int main() {
     srand(time(NULL));
     openblas_set_num_threads(4);
-    
+
     // Parameters
     const int seq_len = 128;
     const int d_model = 64;
-    const int num_samples = 1024;  // Total number of sequences
+    const int num_samples = 1024;
     const int batch_size = 32;
     
-    // Generate all data upfront
+    // Generate synthetic data
     float *X, *y;
     generate_attention_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
     
@@ -33,19 +33,19 @@ int main() {
         float epoch_loss = 0.0f;
         
         for (int batch = 0; batch < num_batches; batch++) {
-            // Index into the pre-generated data
+            // Calculate batch offset
             int batch_offset = batch * batch_size * d_model * seq_len;
-            
+
             // Forward pass
             forward_pass_attention(attn, &X[batch_offset]);
             
             // Calculate loss
             float loss = calculate_loss_attention(attn, &y[batch_offset]);
             epoch_loss += loss;
-            
+
             // Don't update weights after final evaluation
             if (epoch == num_epochs) continue;
-            
+
             // Backward pass
             zero_gradients_attention(attn);
             backward_pass_attention(attn, &X[batch_offset], NULL);
@@ -55,30 +55,32 @@ int main() {
         }
         
         epoch_loss /= num_batches;
-        
+
         // Print progress
         if (epoch % 10 == 0) {
             printf("Epoch [%d/%d], Loss: %.8f\n", epoch, num_epochs, epoch_loss);
         }
     }
-    
+
     // Get timestamp for filenames
     char model_fname[64], data_fname[64];
     time_t now = time(NULL);
     strftime(model_fname, sizeof(model_fname), "%Y%m%d_%H%M%S_attention.bin", localtime(&now));
     strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_attention_data.csv", localtime(&now));
-    
-    // Save model and data
+
+    // Save model and data with timestamped filenames
     save_attention(attn, model_fname);
     save_data(X, y, seq_len, num_samples, d_model, data_fname);
     
-    // Load model back and verify
+    // Load the model back and verify
     printf("\nVerifying saved model...\n");
+
+    // Load the model back with original batch_size
     Attention* loaded_attn = load_attention(model_fname, batch_size);
-    
+
     // Forward pass with loaded model on first batch
     forward_pass_attention(loaded_attn, X);
-    
+
     // Evaluate model performance on first batch
     printf("Test Performance (First Batch):\n");
     printf("-------------------------------\n");
@@ -130,7 +132,7 @@ int main() {
         }
     }
     
-    // Clean up
+    // Cleanup
     free(X);
     free(y);
     free_attention(attn);

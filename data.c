@@ -11,7 +11,7 @@ void generate_attention_data(float** X, float** y, int seq_len, int num_samples,
     // Fill X with random data
     float range = range_max - range_min;
     for (int i = 0; i < total; i++) {
-        (*X)[i] = range_min + ((float)rand() / RAND_MAX) * range;
+        (*X)[i] = range_min + ((float)rand() / (float)RAND_MAX) * range;
     }
     
     // Create attention matrix A: [seq_len × seq_len]
@@ -19,7 +19,7 @@ void generate_attention_data(float** X, float** y, int seq_len, int num_samples,
     float a_scale = 1.0f / sqrtf(seq_len);
     
     for (int i = 0; i < seq_len * seq_len; i++) {
-        A[i] = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * a_scale;
+        A[i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * a_scale;
     }
     
     // Row-wise softmax
@@ -52,7 +52,7 @@ void generate_attention_data(float** X, float** y, int seq_len, int num_samples,
     // Add noise
     float noise_scale = range * 0.01f;
     for (int i = 0; i < total; i++) {
-        float noise = ((float)rand() / RAND_MAX * 2.0f - 1.0f) * noise_scale;
+        float noise = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * noise_scale;
         (*y)[i] += noise;
     }
     
@@ -66,8 +66,6 @@ void save_data(float* X, float* y, int seq_len, int num_samples, int d_model,
                const char* filename) {
     FILE* f = fopen(filename, "w");
     if (!f) return;
-    
-    const int ncols = d_model * num_samples;
     
     // Header
     for (int d = 0; d < d_model; d++) {

@@ -21,36 +21,39 @@ typedef struct {
     float* W_o_grad; // [d_model x d_model]
     
     // Adam parameters
-    float* W_q_m, *W_q_v;
-    float* W_k_m, *W_k_v;
-    float* W_v_m, *W_v_v;
-    float* W_o_m, *W_o_v;
-    float beta1, beta2, epsilon;
-    int t;
-    float weight_decay;
+    float* W_q_m, *W_q_v; // First and second moments for W_q
+    float* W_k_m, *W_k_v; // First and second moments for W_k
+    float* W_v_m, *W_v_v; // First and second moments for W_v
+    float* W_o_m, *W_o_v; // First and second moments for W_o
+    float beta1;          // Exponential decay rate for first moment
+    float beta2;          // Exponential decay rate for second moment
+    float epsilon;        // Small constant for numerical stability
+    int t;                // Time step
+    float weight_decay;   // Weight decay parameter for AdamW
     
     // Forward pass buffers
-    float* Q;            // [seq_len x (d_model * batch_size)]
-    float* K;            // [seq_len x (d_model * batch_size)]
-    float* V;            // [seq_len x (d_model * batch_size)]
-    float* scores;       // [seq_len x (seq_len * batch_size)]
-    float* attn_weights; // [seq_len x (seq_len * batch_size)]
-    float* attn_output;  // [seq_len x (d_model * batch_size)]
-    float* output;       // [seq_len x (d_model * batch_size)]
+    float* Q;            // Query matrix [seq_len x (d_model * batch_size)]
+    float* K;            // Key matrix [seq_len x (d_model * batch_size)]
+    float* V;            // Value matrix [seq_len x (d_model * batch_size)]
+    float* scores;       // Attention scores [seq_len x (seq_len * batch_size)]
+    float* attn_weights; // Attention weights [seq_len x (seq_len * batch_size)]
+    float* attn_output;  // Attention output [seq_len x (d_model * batch_size)]
+    float* output;       // Final output [seq_len x (d_model * batch_size)]
     
     // Backward pass buffers
-    float* grad_Q;            // [seq_len x (d_model * batch_size)]
-    float* grad_K;            // [seq_len x (d_model * batch_size)]
-    float* grad_V;            // [seq_len x (d_model * batch_size)]
-    float* grad_scores;       // [seq_len x (seq_len * batch_size)]
-    float* grad_attn_output;  // [seq_len x (d_model * batch_size)]
-    float* grad_output;       // [seq_len x (d_model * batch_size)]
+    float* grad_output;      // [seq_len x (d_model * batch_size)]
+    float* grad_attn_output; // [seq_len x (d_model * batch_size)]
+    float* grad_weights;     // [seq_len x (seq_len * batch_size)]
+    float* grad_scores;      // [seq_len x (seq_len * batch_size)]
+    float* grad_Q;           // [seq_len x (d_model * batch_size)]
+    float* grad_K;           // [seq_len x (d_model * batch_size)]
+    float* grad_V;           // [seq_len x (d_model * batch_size)]
     
     // Dimensions
     int seq_len;
     int d_model;
     int batch_size;
-    float scale;  // 1/sqrt(d_model)
+    float scale;  // 1/sqrt(d_model) for scaled dot-product attention
 } Attention;
 
 // Function prototypes
