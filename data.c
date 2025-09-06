@@ -55,7 +55,7 @@ void generate_attention_data(float** X, float** y, int seq_len, int num_samples,
     }
     
     // Add noise
-    float noise_scale = range * 0.01f;
+    float noise_scale = range * 0.001f;
     for (int i = 0; i < total; i++) {
         float noise = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * noise_scale;
         (*y)[i] += noise;
@@ -63,7 +63,7 @@ void generate_attention_data(float** X, float** y, int seq_len, int num_samples,
     
     free(A);
     
-    printf("Generated attention data (blocked layout): %d samples, length %d, d_model %d\n", 
+    printf("Generated attention data: %d samples, length %d, d_model %d\n", 
            num_samples, seq_len, d_model);
 }
 

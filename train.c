@@ -34,7 +34,7 @@ int main() {
         
         for (int batch = 0; batch < num_batches; batch++) {
             // Calculate batch offset
-            int batch_offset = batch * batch_size * d_model * seq_len;
+            int batch_offset = batch * batch_size * seq_len * d_model;
 
             // Forward pass
             forward_pass_attention(attn, &X[batch_offset]);
@@ -57,7 +57,7 @@ int main() {
         epoch_loss /= num_batches;
 
         // Print progress
-        if (epoch % 1 == 0) {
+        if (epoch % 10 == 0) {
             printf("Epoch [%d/%d], Loss: %.8f\n", epoch, num_epochs, epoch_loss);
         }
     }
@@ -82,54 +82,50 @@ int main() {
     forward_pass_attention(loaded_attn, X);
 
     // Evaluate model performance on first batch
-    printf("Test Performance (First Batch):\n");
-    printf("-------------------------------\n");
-    
-    int batch_elements = seq_len * d_model * batch_size;
-    
-    // Calculate overall MSE and MAE
-    float mse = 0.0f, mae = 0.0f;
-    for (int i = 0; i < batch_elements; i++) {
-        float diff = loaded_attn->output[i] - y[i];
-        mse += diff * diff;
-        mae += fabs(diff);
-    }
-    mse /= batch_elements;
-    mae /= batch_elements;
-    
-    // Calculate R²
-    float y_mean = 0.0f;
-    for (int i = 0; i < batch_elements; i++) {
-        y_mean += y[i];
-    }
-    y_mean /= batch_elements;
-    
-    float ss_res = 0.0f, ss_tot = 0.0f;
-    for (int i = 0; i < batch_elements; i++) {
-        float diff = loaded_attn->output[i] - y[i];
-        ss_res += diff * diff;
-        ss_tot += (y[i] - y_mean) * (y[i] - y_mean);
-    }
-    float r2 = 1.0f - (ss_res / ss_tot);
-    
-    printf("  MSE: %.8f\n", mse);
-    printf("  MAE: %.6f\n", mae);
-    printf("  R²:  %.6f\n", r2);
-    
-    // Print sample predictions for different positions and dimensions
-    printf("\nSample predictions (various positions/dimensions, batch 0):\n");
-    printf("Pos\tDim\tPredicted\tActual\t\tError\n");
-    printf("---\t---\t---------\t------\t\t-----\n");
-    
-    for (int pos = 0; pos < 5; pos++) {
-        for (int dim = 0; dim < 2; dim++) {
-            // Index: position + seq_len * (dimension * batch_size + batch_idx)
-            int idx = pos + seq_len * (dim * batch_size + 0);
+    printf("Feature\tR²\t\tMAE\t\tSample Predictions\n");
+    printf("-------\t--------\t--------\t--------------------------------\n");
+
+    for (int d = 0; d < d_model; d++) {
+        // Calculate mean for R² across all positions and batches for this feature
+        float y_mean = 0.0f;
+        int total_elements = batch_size * seq_len;
+        
+        for (int b = 0; b < batch_size; b++) {
+            for (int t = 0; t < seq_len; t++) {
+                int idx = b * seq_len * d_model + t * d_model + d;
+                y_mean += y[idx];
+            }
+        }
+        y_mean /= total_elements;
+        
+        // Calculate R² and MAE for this feature
+        float ss_res = 0.0f, ss_tot = 0.0f, mae = 0.0f;
+        for (int b = 0; b < batch_size; b++) {
+            for (int t = 0; t < seq_len; t++) {
+                int idx = b * seq_len * d_model + t * d_model + d;
+                float pred = loaded_attn->output[idx];
+                float actual = y[idx];
+                float diff = pred - actual;
+                
+                ss_res += diff * diff;
+                ss_tot += (actual - y_mean) * (actual - y_mean);
+                mae += fabs(diff);
+            }
+        }
+        
+        float r2 = 1.0f - (ss_res / ss_tot);
+        mae /= total_elements;
+        
+        // Print summary with sample predictions from first batch, first few positions
+        printf("d%d\t%.6f\t%.3f\t\t", d, r2, mae);
+        for (int sample = 0; sample < 3; sample++) {
+            // Show predictions from batch 0, positions 0, 1, 2
+            int idx = 0 * seq_len * d_model + sample * d_model + d;
             float pred = loaded_attn->output[idx];
             float actual = y[idx];
-            printf("%d\t%d\t%.4f\t\t%.4f\t\t%.4f\n", 
-                   pos, dim, pred, actual, fabs(pred - actual));
+            printf("%.2f/%.2f ", pred, actual);
         }
+        printf("\n");
     }
     
     // Cleanup
