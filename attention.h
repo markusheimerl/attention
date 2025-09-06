@@ -31,23 +31,23 @@ typedef struct {
     int t;                // Time step
     float weight_decay;   // Weight decay parameter for AdamW
     
-    // Forward pass buffers
-    float* Q;            // Query matrix [seq_len x (d_model * batch_size)]
-    float* K;            // Key matrix [seq_len x (d_model * batch_size)]
-    float* V;            // Value matrix [seq_len x (d_model * batch_size)]
-    float* scores;       // Attention scores [seq_len x (seq_len * batch_size)]
-    float* attn_weights; // Attention weights [seq_len x (seq_len * batch_size)]
-    float* attn_output;  // Attention output [seq_len x (d_model * batch_size)]
-    float* output;       // Final output [seq_len x (d_model * batch_size)]
+    // Forward pass buffers - blocked layout [batch_size x seq_len x d_model/seq_len]
+    float* Q;            // Query matrix [batch_size x seq_len x d_model]
+    float* K;            // Key matrix [batch_size x seq_len x d_model]
+    float* V;            // Value matrix [batch_size x seq_len x d_model]
+    float* scores;       // Attention scores [batch_size x seq_len x seq_len]
+    float* attn_weights; // Attention weights [batch_size x seq_len x seq_len]
+    float* attn_output;  // Attention output [batch_size x seq_len x d_model]
+    float* output;       // Final output [batch_size x seq_len x d_model]
     
     // Backward pass buffers
-    float* grad_output;      // [seq_len x (d_model * batch_size)]
-    float* grad_attn_output; // [seq_len x (d_model * batch_size)]
-    float* grad_weights;     // [seq_len x (seq_len * batch_size)]
-    float* grad_scores;      // [seq_len x (seq_len * batch_size)]
-    float* grad_Q;           // [seq_len x (d_model * batch_size)]
-    float* grad_K;           // [seq_len x (d_model * batch_size)]
-    float* grad_V;           // [seq_len x (d_model * batch_size)]
+    float* grad_output;      // [batch_size x seq_len x d_model]
+    float* grad_attn_output; // [batch_size x seq_len x d_model]
+    float* grad_weights;     // [batch_size x seq_len x seq_len]
+    float* grad_scores;      // [batch_size x seq_len x seq_len]
+    float* grad_Q;           // [batch_size x seq_len x d_model]
+    float* grad_K;           // [batch_size x seq_len x d_model]
+    float* grad_V;           // [batch_size x seq_len x d_model]
     
     // Dimensions
     int seq_len;

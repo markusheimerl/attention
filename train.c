@@ -57,7 +57,7 @@ int main() {
         epoch_loss /= num_batches;
 
         // Print progress
-        if (epoch % 10 == 0) {
+        if (epoch % 1 == 0) {
             printf("Epoch [%d/%d], Loss: %.8f\n", epoch, num_epochs, epoch_loss);
         }
     }

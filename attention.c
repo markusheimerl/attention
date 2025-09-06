@@ -18,8 +18,8 @@ Attention* init_attention(int seq_len, int d_model, int batch_size) {
     attn->weight_decay = 0.01f;
     
     int weight_size = d_model * d_model;
-    int seq_batch_size = seq_len * d_model * batch_size;
-    int attn_matrix_size = seq_len * seq_len * batch_size;
+    int seq_batch_size = batch_size * seq_len * d_model;
+    int attn_matrix_size = batch_size * seq_len * seq_len;
     
     // Allocate weights and gradients
     attn->W_q = (float*)malloc(weight_size * sizeof(float));
@@ -89,23 +89,116 @@ void free_attention(Attention* attn) {
 
 // Forward pass
 void forward_pass_attention(Attention* attn, float* X) {
-    (void)attn;
-    (void)X;
-    // TODO: Implement forward pass
-    // 1. Q = X * W_q, K = X * W_k, V = X * W_v
-    // 2. scores = Q * K^T / sqrt(d_model)
-    // 3. attn_weights = softmax(scores)
-    // 4. attn_output = attn_weights * V
-    // 5. output = attn_output * W_o
+    // Step 1: Compute Q, K, V for each batch
+    for (int b = 0; b < attn->batch_size; b++) {
+        float* X_b = &X[b * attn->seq_len * attn->d_model];
+        float* Q_b = &attn->Q[b * attn->seq_len * attn->d_model];
+        float* K_b = &attn->K[b * attn->seq_len * attn->d_model];
+        float* V_b = &attn->V[b * attn->seq_len * attn->d_model];
+        
+        // Q_b = X_b * W_q
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                    attn->seq_len, attn->d_model, attn->d_model,
+                    1.0f, X_b, attn->seq_len,
+                    attn->W_q, attn->d_model,
+                    0.0f, Q_b, attn->seq_len);
+        
+        // K_b = X_b * W_k
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                    attn->seq_len, attn->d_model, attn->d_model,
+                    1.0f, X_b, attn->seq_len,
+                    attn->W_k, attn->d_model,
+                    0.0f, K_b, attn->seq_len);
+        
+        // V_b = X_b * W_v
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                    attn->seq_len, attn->d_model, attn->d_model,
+                    1.0f, X_b, attn->seq_len,
+                    attn->W_v, attn->d_model,
+                    0.0f, V_b, attn->seq_len);
+    }
+    
+    // Step 2: Compute attention scores = Q * K^T * scale
+    for (int b = 0; b < attn->batch_size; b++) {
+        float* Q_b = &attn->Q[b * attn->seq_len * attn->d_model];
+        float* K_b = &attn->K[b * attn->seq_len * attn->d_model];
+        float* scores_b = &attn->scores[b * attn->seq_len * attn->seq_len];
+        
+        // scores_b = Q_b * K_b^T * scale
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
+                    attn->seq_len, attn->seq_len, attn->d_model,
+                    attn->scale, Q_b, attn->seq_len,
+                    K_b, attn->seq_len,
+                    0.0f, scores_b, attn->seq_len);
+    }
+    
+    // Step 3: Apply softmax row-wise
+    for (int b = 0; b < attn->batch_size; b++) {
+        float* scores_b = &attn->scores[b * attn->seq_len * attn->seq_len];
+        float* weights_b = &attn->attn_weights[b * attn->seq_len * attn->seq_len];
+        
+        for (int i = 0; i < attn->seq_len; i++) {
+            // Find max for numerical stability
+            float max_val = -1e30f;
+            for (int j = 0; j < attn->seq_len; j++) {
+                float val = scores_b[i + attn->seq_len * j];
+                if (val > max_val) max_val = val;
+            }
+            
+            // Compute softmax
+            float sum_exp = 0.0f;
+            for (int j = 0; j < attn->seq_len; j++) {
+                float exp_val = expf(scores_b[i + attn->seq_len * j] - max_val);
+                weights_b[i + attn->seq_len * j] = exp_val;
+                sum_exp += exp_val;
+            }
+            
+            // Normalize
+            for (int j = 0; j < attn->seq_len; j++) {
+                weights_b[i + attn->seq_len * j] /= sum_exp;
+            }
+        }
+    }
+    
+    // Step 4: Compute attention output = weights * V
+    for (int b = 0; b < attn->batch_size; b++) {
+        float* weights_b = &attn->attn_weights[b * attn->seq_len * attn->seq_len];
+        float* V_b = &attn->V[b * attn->seq_len * attn->d_model];
+        float* attn_output_b = &attn->attn_output[b * attn->seq_len * attn->d_model];
+        
+        // attn_output_b = weights_b * V_b
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                    attn->seq_len, attn->d_model, attn->seq_len,
+                    1.0f, weights_b, attn->seq_len,
+                    V_b, attn->seq_len,
+                    0.0f, attn_output_b, attn->seq_len);
+    }
+    
+    // Step 5: Apply output projection
+    for (int b = 0; b < attn->batch_size; b++) {
+        float* attn_output_b = &attn->attn_output[b * attn->seq_len * attn->d_model];
+        float* output_b = &attn->output[b * attn->seq_len * attn->d_model];
+        
+        // output_b = attn_output_b * W_o
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                    attn->seq_len, attn->d_model, attn->d_model,
+                    1.0f, attn_output_b, attn->seq_len,
+                    attn->W_o, attn->d_model,
+                    0.0f, output_b, attn->seq_len);
+    }
 }
 
 // Calculate loss
 float calculate_loss_attention(Attention* attn, float* y) {
-    (void)attn;
-    (void)y;
-    // TODO: Implement loss calculation (MSE)
-    // Calculate grad_output = output - y and return MSE
-    return 0.0f;
+    int total_elements = attn->batch_size * attn->seq_len * attn->d_model;
+    
+    // grad_output = output - y
+    cblas_scopy(total_elements, attn->output, 1, attn->grad_output, 1);
+    cblas_saxpy(total_elements, -1.0f, y, 1, attn->grad_output, 1);
+    
+    // Calculate MSE loss
+    float loss = cblas_sdot(total_elements, attn->grad_output, 1, attn->grad_output, 1);
+    return loss / total_elements;
 }
 
 // Zero gradients
@@ -120,21 +213,151 @@ void zero_gradients_attention(Attention* attn) {
 
 // Backward pass
 void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
-    (void)attn;
-    (void)X;
-    (void)grad_X;
-    // TODO: Implement backward pass
-    // 1. Gradient through output projection: grad_W_o, grad_attn_output
-    // 2. Gradient through attention: grad_weights, grad_V
-    // 3. Gradient through softmax: grad_scores
-    // 4. Gradient through scaled dot-product: grad_Q, grad_K
-    // 5. Gradient through projections: grad_W_q, grad_W_k, grad_W_v
-    // 6. If grad_X != NULL, compute gradient w.r.t. input
+    // Step 5 (backward): Gradient through output projection
+    for (int b = 0; b < attn->batch_size; b++) {
+        float* grad_output_b = &attn->grad_output[b * attn->seq_len * attn->d_model];
+        float* attn_output_b = &attn->attn_output[b * attn->seq_len * attn->d_model];
+        float* grad_attn_output_b = &attn->grad_attn_output[b * attn->seq_len * attn->d_model];
+        
+        // grad_W_o += attn_output_b^T * grad_output_b
+        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
+                    attn->d_model, attn->d_model, attn->seq_len,
+                    1.0f, attn_output_b, attn->seq_len,
+                    grad_output_b, attn->seq_len,
+                    1.0f, attn->W_o_grad, attn->d_model);
+        
+        // grad_attn_output_b = grad_output_b * W_o^T
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
+                    attn->seq_len, attn->d_model, attn->d_model,
+                    1.0f, grad_output_b, attn->seq_len,
+                    attn->W_o, attn->d_model,
+                    0.0f, grad_attn_output_b, attn->seq_len);
+    }
+    
+    // Step 4 (backward): Gradient through attention output computation
+    for (int b = 0; b < attn->batch_size; b++) {
+        float* grad_attn_output_b = &attn->grad_attn_output[b * attn->seq_len * attn->d_model];
+        float* weights_b = &attn->attn_weights[b * attn->seq_len * attn->seq_len];
+        float* V_b = &attn->V[b * attn->seq_len * attn->d_model];
+        float* grad_weights_b = &attn->grad_weights[b * attn->seq_len * attn->seq_len];
+        float* grad_V_b = &attn->grad_V[b * attn->seq_len * attn->d_model];
+        
+        // grad_weights_b = grad_attn_output_b * V_b^T
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
+                    attn->seq_len, attn->seq_len, attn->d_model,
+                    1.0f, grad_attn_output_b, attn->seq_len,
+                    V_b, attn->seq_len,
+                    0.0f, grad_weights_b, attn->seq_len);
+        
+        // grad_V_b = weights_b^T * grad_attn_output_b
+        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
+                    attn->seq_len, attn->d_model, attn->seq_len,
+                    1.0f, weights_b, attn->seq_len,
+                    grad_attn_output_b, attn->seq_len,
+                    0.0f, grad_V_b, attn->seq_len);
+    }
+    
+    // Step 3 (backward): Gradient through softmax
+    for (int b = 0; b < attn->batch_size; b++) {
+        float* grad_weights_b = &attn->grad_weights[b * attn->seq_len * attn->seq_len];
+        float* weights_b = &attn->attn_weights[b * attn->seq_len * attn->seq_len];
+        float* grad_scores_b = &attn->grad_scores[b * attn->seq_len * attn->seq_len];
+        
+        for (int i = 0; i < attn->seq_len; i++) {
+            // Compute sum term for softmax gradient
+            float sum_term = 0.0f;
+            for (int k = 0; k < attn->seq_len; k++) {
+                int idx = i + attn->seq_len * k;
+                sum_term += grad_weights_b[idx] * weights_b[idx];
+            }
+            
+            // Apply softmax gradient formula
+            for (int j = 0; j < attn->seq_len; j++) {
+                int idx = i + attn->seq_len * j;
+                grad_scores_b[idx] = weights_b[idx] * (grad_weights_b[idx] - sum_term);
+            }
+        }
+    }
+    
+    // Step 2 (backward): Gradient through attention scores
+    for (int b = 0; b < attn->batch_size; b++) {
+        float* grad_scores_b = &attn->grad_scores[b * attn->seq_len * attn->seq_len];
+        float* Q_b = &attn->Q[b * attn->seq_len * attn->d_model];
+        float* K_b = &attn->K[b * attn->seq_len * attn->d_model];
+        float* grad_Q_b = &attn->grad_Q[b * attn->seq_len * attn->d_model];
+        float* grad_K_b = &attn->grad_K[b * attn->seq_len * attn->d_model];
+        
+        // grad_Q_b = grad_scores_b * K_b * scale
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                    attn->seq_len, attn->d_model, attn->seq_len,
+                    attn->scale, grad_scores_b, attn->seq_len,
+                    K_b, attn->seq_len,
+                    0.0f, grad_Q_b, attn->seq_len);
+        
+        // grad_K_b = grad_scores_b^T * Q_b * scale
+        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
+                    attn->seq_len, attn->d_model, attn->seq_len,
+                    attn->scale, grad_scores_b, attn->seq_len,
+                    Q_b, attn->seq_len,
+                    0.0f, grad_K_b, attn->seq_len);
+    }
+    
+    // Step 1 (backward): Gradient through linear projections
+    for (int b = 0; b < attn->batch_size; b++) {
+        float* X_b = &X[b * attn->seq_len * attn->d_model];
+        float* grad_Q_b = &attn->grad_Q[b * attn->seq_len * attn->d_model];
+        float* grad_K_b = &attn->grad_K[b * attn->seq_len * attn->d_model];
+        float* grad_V_b = &attn->grad_V[b * attn->seq_len * attn->d_model];
+        
+        // grad_W_q += X_b^T * grad_Q_b
+        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
+                    attn->d_model, attn->d_model, attn->seq_len,
+                    1.0f, X_b, attn->seq_len,
+                    grad_Q_b, attn->seq_len,
+                    1.0f, attn->W_q_grad, attn->d_model);
+        
+        // grad_W_k += X_b^T * grad_K_b
+        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
+                    attn->d_model, attn->d_model, attn->seq_len,
+                    1.0f, X_b, attn->seq_len,
+                    grad_K_b, attn->seq_len,
+                    1.0f, attn->W_k_grad, attn->d_model);
+        
+        // grad_W_v += X_b^T * grad_V_b
+        cblas_sgemm(CblasColMajor, CblasTrans, CblasNoTrans,
+                    attn->d_model, attn->d_model, attn->seq_len,
+                    1.0f, X_b, attn->seq_len,
+                    grad_V_b, attn->seq_len,
+                    1.0f, attn->W_v_grad, attn->d_model);
+        
+        // grad_X_b = grad_Q_b * W_q^T + grad_K_b * W_k^T + grad_V_b * W_v^T
+        if (grad_X != NULL) {
+            float* grad_X_b = &grad_X[b * attn->seq_len * attn->d_model];
+            
+            cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
+                        attn->seq_len, attn->d_model, attn->d_model,
+                        1.0f, grad_Q_b, attn->seq_len,
+                        attn->W_q, attn->d_model,
+                        0.0f, grad_X_b, attn->seq_len);
+            
+            cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
+                        attn->seq_len, attn->d_model, attn->d_model,
+                        1.0f, grad_K_b, attn->seq_len,
+                        attn->W_k, attn->d_model,
+                        1.0f, grad_X_b, attn->seq_len);
+            
+            cblas_sgemm(CblasColMajor, CblasNoTrans, CblasTrans,
+                        attn->seq_len, attn->d_model, attn->d_model,
+                        1.0f, grad_V_b, attn->seq_len,
+                        attn->W_v, attn->d_model,
+                        1.0f, grad_X_b, attn->seq_len);
+        }
+    }
 }
 
-// Update weights using AdamW
+// Update weights using AdamW (same as before)
 void update_weights_attention(Attention* attn, float learning_rate) {
-    attn->t++;  // Increment time step
+    attn->t++;
     
     float beta1_t = powf(attn->beta1, attn->t);
     float beta2_t = powf(attn->beta2, attn->t);
@@ -142,52 +365,26 @@ void update_weights_attention(Attention* attn, float learning_rate) {
     
     int weight_size = attn->d_model * attn->d_model;
     
-    // Update W_q weights
-    for (int i = 0; i < weight_size; i++) {
-        float grad = attn->W_q_grad[i] / attn->batch_size;
-        
-        attn->W_q_m[i] = attn->beta1 * attn->W_q_m[i] + (1.0f - attn->beta1) * grad;
-        attn->W_q_v[i] = attn->beta2 * attn->W_q_v[i] + (1.0f - attn->beta2) * grad * grad;
-        
-        float update = alpha_t * attn->W_q_m[i] / (sqrtf(attn->W_q_v[i]) + attn->epsilon);
-        attn->W_q[i] = attn->W_q[i] * (1.0f - learning_rate * attn->weight_decay) - update;
-    }
+    // Update all weight matrices (W_q, W_k, W_v, W_o)
+    float* weights[] = {attn->W_q, attn->W_k, attn->W_v, attn->W_o};
+    float* grads[] = {attn->W_q_grad, attn->W_k_grad, attn->W_v_grad, attn->W_o_grad};
+    float* m_arrays[] = {attn->W_q_m, attn->W_k_m, attn->W_v_m, attn->W_o_m};
+    float* v_arrays[] = {attn->W_q_v, attn->W_k_v, attn->W_v_v, attn->W_o_v};
     
-    // Update W_k weights
-    for (int i = 0; i < weight_size; i++) {
-        float grad = attn->W_k_grad[i] / attn->batch_size;
-        
-        attn->W_k_m[i] = attn->beta1 * attn->W_k_m[i] + (1.0f - attn->beta1) * grad;
-        attn->W_k_v[i] = attn->beta2 * attn->W_k_v[i] + (1.0f - attn->beta2) * grad * grad;
-        
-        float update = alpha_t * attn->W_k_m[i] / (sqrtf(attn->W_k_v[i]) + attn->epsilon);
-        attn->W_k[i] = attn->W_k[i] * (1.0f - learning_rate * attn->weight_decay) - update;
-    }
-    
-    // Update W_v weights
-    for (int i = 0; i < weight_size; i++) {
-        float grad = attn->W_v_grad[i] / attn->batch_size;
-        
-        attn->W_v_m[i] = attn->beta1 * attn->W_v_m[i] + (1.0f - attn->beta1) * grad;
-        attn->W_v_v[i] = attn->beta2 * attn->W_v_v[i] + (1.0f - attn->beta2) * grad * grad;
-        
-        float update = alpha_t * attn->W_v_m[i] / (sqrtf(attn->W_v_v[i]) + attn->epsilon);
-        attn->W_v[i] = attn->W_v[i] * (1.0f - learning_rate * attn->weight_decay) - update;
-    }
-    
-    // Update W_o weights
-    for (int i = 0; i < weight_size; i++) {
-        float grad = attn->W_o_grad[i] / attn->batch_size;
-        
-        attn->W_o_m[i] = attn->beta1 * attn->W_o_m[i] + (1.0f - attn->beta1) * grad;
-        attn->W_o_v[i] = attn->beta2 * attn->W_o_v[i] + (1.0f - attn->beta2) * grad * grad;
-        
-        float update = alpha_t * attn->W_o_m[i] / (sqrtf(attn->W_o_v[i]) + attn->epsilon);
-        attn->W_o[i] = attn->W_o[i] * (1.0f - learning_rate * attn->weight_decay) - update;
+    for (int w = 0; w < 4; w++) {
+        for (int i = 0; i < weight_size; i++) {
+            float grad = grads[w][i] / attn->batch_size;
+            
+            m_arrays[w][i] = attn->beta1 * m_arrays[w][i] + (1.0f - attn->beta1) * grad;
+            v_arrays[w][i] = attn->beta2 * v_arrays[w][i] + (1.0f - attn->beta2) * grad * grad;
+            
+            float update = alpha_t * m_arrays[w][i] / (sqrtf(v_arrays[w][i]) + attn->epsilon);
+            weights[w][i] = weights[w][i] * (1.0f - learning_rate * attn->weight_decay) - update;
+        }
     }
 }
 
-// Save model weights and Adam state to binary file
+// Save and load functions (same structure as before, just different buffer sizes)
 void save_attention(Attention* attn, const char* filename) {
     FILE* file = fopen(filename, "wb");
     if (!file) {
@@ -223,7 +420,6 @@ void save_attention(Attention* attn, const char* filename) {
     printf("Model saved to %s\n", filename);
 }
 
-// Load model weights and Adam state from binary file
 Attention* load_attention(const char* filename, int custom_batch_size) {
     FILE* file = fopen(filename, "rb");
     if (!file) {

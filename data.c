@@ -2,8 +2,8 @@
 
 void generate_attention_data(float** X, float** y, int seq_len, int num_samples, int d_model,
                            float range_min, float range_max) {
-    const int ncols = d_model * num_samples;
-    const int total = seq_len * ncols;
+    // Blocked layout: [num_samples x seq_len x d_model]
+    const int total = num_samples * seq_len * d_model;
     
     *X = (float*)malloc(total * sizeof(float));
     *y = (float*)malloc(total * sizeof(float));
@@ -22,7 +22,7 @@ void generate_attention_data(float** X, float** y, int seq_len, int num_samples,
         A[i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * a_scale;
     }
     
-    // Row-wise softmax
+    // Row-wise softmax on A
     for (int i = 0; i < seq_len; i++) {
         float max_val = -1e30f;
         for (int j = 0; j < seq_len; j++) {
@@ -42,12 +42,17 @@ void generate_attention_data(float** X, float** y, int seq_len, int num_samples,
         }
     }
     
-    // Y = A * X
-    cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
-                seq_len, ncols, seq_len,
-                1.0f, A, seq_len,
-                *X, seq_len,
-                0.0f, *y, seq_len);
+    // Apply attention transformation for each batch: Y_b = A * X_b
+    for (int b = 0; b < num_samples; b++) {
+        float* X_b = &(*X)[b * seq_len * d_model];
+        float* Y_b = &(*y)[b * seq_len * d_model];
+        
+        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+                    seq_len, d_model, seq_len,
+                    1.0f, A, seq_len,
+                    X_b, seq_len,
+                    0.0f, Y_b, seq_len);
+    }
     
     // Add noise
     float noise_scale = range * 0.01f;
@@ -58,7 +63,7 @@ void generate_attention_data(float** X, float** y, int seq_len, int num_samples,
     
     free(A);
     
-    printf("Generated attention data: %d samples, length %d, d_model %d\n", 
+    printf("Generated attention data (blocked layout): %d samples, length %d, d_model %d\n", 
            num_samples, seq_len, d_model);
 }
 
@@ -67,32 +72,30 @@ void save_data(float* X, float* y, int seq_len, int num_samples, int d_model,
     FILE* f = fopen(filename, "w");
     if (!f) return;
     
-    // Header
+    // Header: batch_id, seq_pos, then features, then targets
+    fprintf(f, "batch_id,seq_pos,");
     for (int d = 0; d < d_model; d++) {
-        for (int s = 0; s < num_samples; s++) {
-            fprintf(f, "x_d%d_s%d,", d, s);
-        }
+        fprintf(f, "x_d%d,", d);
     }
     for (int d = 0; d < d_model; d++) {
-        for (int s = 0; s < num_samples; s++) {
-            fprintf(f, "y_d%d_s%d%s", d, s, 
-                   (d == d_model-1 && s == num_samples-1) ? "\n" : ",");
-        }
+        fprintf(f, "y_d%d%s", d, d == d_model-1 ? "\n" : ",");
     }
     
-    // Data
-    for (int t = 0; t < seq_len; t++) {
-        for (int d = 0; d < d_model; d++) {
-            for (int s = 0; s < num_samples; s++) {
-                int c = d * num_samples + s;
-                fprintf(f, "%.6f,", X[t + seq_len * c]);
+    // Data: one row per (batch, sequence_position)
+    for (int b = 0; b < num_samples; b++) {
+        for (int t = 0; t < seq_len; t++) {
+            fprintf(f, "%d,%d,", b, t);
+            
+            // X features for this (batch, position)
+            for (int d = 0; d < d_model; d++) {
+                int idx = b * seq_len * d_model + t * d_model + d;
+                fprintf(f, "%.6f,", X[idx]);
             }
-        }
-        for (int d = 0; d < d_model; d++) {
-            for (int s = 0; s < num_samples; s++) {
-                int c = d * num_samples + s;
-                fprintf(f, "%.6f%s", y[t + seq_len * c],
-                       (d == d_model-1 && s == num_samples-1) ? "\n" : ",");
+            
+            // Y features for this (batch, position)
+            for (int d = 0; d < d_model; d++) {
+                int idx = b * seq_len * d_model + t * d_model + d;
+                fprintf(f, "%.6f%s", y[idx], d == d_model-1 ? "\n" : ",");
             }
         }
     }
