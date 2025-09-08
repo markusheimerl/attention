@@ -31,7 +31,7 @@ typedef struct {
     int t;                // Time step
     float weight_decay;   // Weight decay parameter for AdamW
     
-    // Forward pass buffers - blocked layout [batch_size x seq_len x d_model/seq_len]
+    // Forward pass buffers
     float* Q;            // Query matrix [batch_size x seq_len x d_model]
     float* K;            // Key matrix [batch_size x seq_len x d_model]
     float* V;            // Value matrix [batch_size x seq_len x d_model]
@@ -53,7 +53,7 @@ typedef struct {
     int seq_len;
     int d_model;
     int batch_size;
-    float scale;  // 1/sqrt(d_model) for scaled dot-product attention
+    float scale;
 } Attention;
 
 // Function prototypes

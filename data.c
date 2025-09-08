@@ -2,7 +2,7 @@
 
 void generate_attention_data(float** X, float** y, int seq_len, int num_samples, int d_model,
                            float range_min, float range_max) {
-    // Blocked layout: [num_samples x seq_len x d_model]
+    // Row-major layout: [num_samples x seq_len x d_model]
     const int total = num_samples * seq_len * d_model;
     
     *X = (float*)malloc(total * sizeof(float));
@@ -26,19 +26,19 @@ void generate_attention_data(float** X, float** y, int seq_len, int num_samples,
     for (int i = 0; i < seq_len; i++) {
         float max_val = -1e30f;
         for (int j = 0; j < seq_len; j++) {
-            float v = A[i + seq_len * j];
+            float v = A[i * seq_len + j];
             if (v > max_val) max_val = v;
         }
         
         float sum = 0.0f;
         for (int j = 0; j < seq_len; j++) {
-            float e = expf(A[i + seq_len * j] - max_val);
-            A[i + seq_len * j] = e;
+            float e = expf(A[i * seq_len + j] - max_val);
+            A[i * seq_len + j] = e;
             sum += e;
         }
         
         for (int j = 0; j < seq_len; j++) {
-            A[i + seq_len * j] /= sum;
+            A[i * seq_len + j] /= sum;
         }
     }
     
@@ -47,11 +47,11 @@ void generate_attention_data(float** X, float** y, int seq_len, int num_samples,
         float* X_b = &(*X)[b * seq_len * d_model];
         float* Y_b = &(*y)[b * seq_len * d_model];
         
-        cblas_sgemm(CblasColMajor, CblasNoTrans, CblasNoTrans,
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                     seq_len, d_model, seq_len,
                     1.0f, A, seq_len,
-                    X_b, seq_len,
-                    0.0f, Y_b, seq_len);
+                    X_b, d_model,
+                    0.0f, Y_b, d_model);
     }
     
     // Add noise

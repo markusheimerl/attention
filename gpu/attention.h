@@ -6,6 +6,7 @@
 #include <string.h>
 #include <math.h>
 #include <cublas_v2.h>
+#include <cublasLt.h>
 #include <cuda_runtime.h>
 
 // CUDA Error checking macro
@@ -26,6 +27,18 @@
     cublasStatus_t status = call; \
     if (status != CUBLAS_STATUS_SUCCESS) { \
         fprintf(stderr, "cuBLAS error in %s:%d: %d\n", __FILE__, __LINE__, \
+                (int)status); \
+        exit(EXIT_FAILURE); \
+    } \
+} while(0)
+#endif
+
+// cuBLASLt Error checking macro
+#ifndef CHECK_CUBLASLT
+#define CHECK_CUBLASLT(call) do { \
+    cublasStatus_t status = call; \
+    if (status != CUBLAS_STATUS_SUCCESS) { \
+        fprintf(stderr, "cuBLASLt error in %s:%d: %d\n", __FILE__, __LINE__, \
                 (int)status); \
         exit(EXIT_FAILURE); \
     } \
@@ -56,7 +69,7 @@ typedef struct {
     int t;                     // Time step
     float weight_decay;        // Weight decay parameter for AdamW
     
-    // Forward pass buffers - blocked layout [batch_size x seq_len x d_model/seq_len]
+    // Forward pass buffers
     float* d_Q;            // Query matrix [batch_size x seq_len x d_model]
     float* d_K;            // Key matrix [batch_size x seq_len x d_model]
     float* d_V;            // Value matrix [batch_size x seq_len x d_model]
@@ -74,8 +87,26 @@ typedef struct {
     float* d_grad_K;           // [batch_size x seq_len x d_model]
     float* d_grad_V;           // [batch_size x seq_len x d_model]
 
-    // cuBLAS handle
+    // cuBLAS and cuBLASLt handles
     cublasHandle_t cublas_handle;
+    cublasLtHandle_t cublaslt_handle;
+    
+    // cuBLASLt descriptors and layouts
+    cublasLtMatmulDesc_t matmul_desc;
+    cublasLtMatmulDesc_t matmul_NT_desc;  // No transpose A, transpose B
+    cublasLtMatmulDesc_t matmul_TN_desc;  // Transpose A, no transpose B
+    
+    // Matrix layouts for weight operations
+    cublasLtMatrixLayout_t W_layout;      // Weight matrices [d_model x d_model]
+    cublasLtMatrixLayout_t seq_layout;    // Sequence data [seq_len x d_model]
+    cublasLtMatrixLayout_t W_grad_layout; // Weight gradients [d_model x d_model]
+    
+    // Matrix layouts for attention operations
+    cublasLtMatrixLayout_t Q_layout;      // Query [seq_len x d_model]
+    cublasLtMatrixLayout_t K_layout;      // Key [seq_len x d_model]
+    cublasLtMatrixLayout_t V_layout;      // Value [seq_len x d_model]
+    cublasLtMatrixLayout_t scores_layout; // Attention scores [seq_len x seq_len]
+    cublasLtMatrixLayout_t weights_layout; // Attention weights [seq_len x seq_len]
     
     // Dimensions
     int seq_len;
@@ -90,7 +121,7 @@ __global__ void softmax_backward_kernel_attention(float* grad_scores, float* gra
 __global__ void adamw_update_kernel_attention(float* weight, float* grad, float* m, float* v, float beta1, float beta2, float epsilon, float learning_rate, float weight_decay, float alpha_t, int size, int batch_size);
 
 // Function prototypes
-Attention* init_attention(int seq_len, int d_model, int batch_size, cublasHandle_t cublas_handle);
+Attention* init_attention(int seq_len, int d_model, int batch_size, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle);
 void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, float* d_X);
 float calculate_loss_attention(Attention* attn, float* d_y);
@@ -98,6 +129,6 @@ void zero_gradients_attention(Attention* attn);
 void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X);
 void update_weights_attention(Attention* attn, float learning_rate);
 void save_attention(Attention* attn, const char* filename);
-Attention* load_attention(const char* filename, int custom_batch_size, cublasHandle_t cublas_handle);
+Attention* load_attention(const char* filename, int custom_batch_size, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle);
 
 #endif
