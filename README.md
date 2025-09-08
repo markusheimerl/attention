@@ -9,7 +9,7 @@ Q &= XW_q \\
 K &= XW_k \\
 V &= XW_v \\
 S &= \frac{QK^T}{\sqrt{d}} \\
-A &= \text{softmax}(S) \\
+A_{ij} &= \frac{\exp(S_{ij})}{\sum_k \exp(S_{ik})} \\
 Z &= AV \\
 Y &= ZW_o
 \end{align*}
