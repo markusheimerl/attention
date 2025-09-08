@@ -1,62 +1,105 @@
 #include "data.h"
 
-void generate_data(float** X, float** y, int num_samples, int seq_len, int feature_dim) {
-    *X = (float*)malloc(num_samples * seq_len * feature_dim * sizeof(float));
-    *y = (float*)malloc(num_samples * seq_len * feature_dim * sizeof(float));
+void generate_attention_data(float** X, float** y, int seq_len, int num_samples, int d_model,
+                           float range_min, float range_max) {
+    // Row-major layout: [num_samples x seq_len x d_model]
+    const int total = num_samples * seq_len * d_model;
     
-    printf("Generating attention task data: [%d, %d, %d]\n", num_samples, seq_len, feature_dim);
+    *X = (float*)malloc(total * sizeof(float));
+    *y = (float*)malloc(total * sizeof(float));
     
-    for (int sample = 0; sample < num_samples; sample++) {
-        int base = sample * seq_len * feature_dim;
-        
-        // Generate random input and find max row
-        int max_row = 0;
-        float max_val = (*X)[base] = -5.0f + ((float)rand() / (float)RAND_MAX) * 15.0f;
-        
-        for (int i = 1; i < seq_len * feature_dim; i++) {
-            (*X)[base + i] = -5.0f + ((float)rand() / (float)RAND_MAX) * 15.0f;
-            if (i % feature_dim == 0 && (*X)[base + i] > max_val) {
-                max_val = (*X)[base + i];
-                max_row = i / feature_dim;
-            }
+    // Fill X with random data
+    float range = range_max - range_min;
+    for (int i = 0; i < total; i++) {
+        (*X)[i] = range_min + ((float)rand() / (float)RAND_MAX) * range;
+    }
+    
+    // Create attention matrix A: [seq_len × seq_len]
+    float* A = (float*)malloc(seq_len * seq_len * sizeof(float));
+    float a_scale = 1.0f / sqrtf(seq_len);
+    
+    for (int i = 0; i < seq_len * seq_len; i++) {
+        A[i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * a_scale;
+    }
+    
+    // Row-wise softmax on A
+    for (int i = 0; i < seq_len; i++) {
+        float max_val = -1e30f;
+        for (int j = 0; j < seq_len; j++) {
+            float v = A[i * seq_len + j];
+            if (v > max_val) max_val = v;
         }
         
-        // Copy max row to all output positions
-        for (int seq = 0; seq < seq_len; seq++) {
-            for (int feat = 0; feat < feature_dim; feat++) {
-                (*y)[base + seq * feature_dim + feat] = (*X)[base + max_row * feature_dim + feat];
-            }
+        float sum = 0.0f;
+        for (int j = 0; j < seq_len; j++) {
+            float e = expf(A[i * seq_len + j] - max_val);
+            A[i * seq_len + j] = e;
+            sum += e;
+        }
+        
+        for (int j = 0; j < seq_len; j++) {
+            A[i * seq_len + j] /= sum;
         }
     }
-    printf("Data generation completed.\n");
+    
+    // Apply attention transformation for each batch: Y_b = A * X_b
+    for (int b = 0; b < num_samples; b++) {
+        float* X_b = &(*X)[b * seq_len * d_model];
+        float* Y_b = &(*y)[b * seq_len * d_model];
+        
+        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                    seq_len, d_model, seq_len,
+                    1.0f, A, seq_len,
+                    X_b, d_model,
+                    0.0f, Y_b, d_model);
+    }
+    
+    // Add noise
+    float noise_scale = range * 0.001f;
+    for (int i = 0; i < total; i++) {
+        float noise = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * noise_scale;
+        (*y)[i] += noise;
+    }
+    
+    free(A);
+    
+    printf("Generated attention data: %d samples, length %d, d_model %d\n", 
+           num_samples, seq_len, d_model);
 }
 
-void save_data(float* X, float* y, int num_samples, int seq_len, int feature_dim, const char* filename) {
-    FILE* file = fopen(filename, "w");
-    if (!file) return;
+void save_data(float* X, float* y, int seq_len, int num_samples, int d_model,
+               const char* filename) {
+    FILE* f = fopen(filename, "w");
+    if (!f) return;
     
-    // Header
-    fprintf(file, "sample,seq_pos,");
-    for (int i = 0; i < feature_dim; i++) fprintf(file, "x%d,", i);
-    for (int i = 0; i < feature_dim - 1; i++) fprintf(file, "y%d,", i);
-    fprintf(file, "y%d\n", feature_dim - 1);
+    // Header: batch_id, seq_pos, then features, then targets
+    fprintf(f, "batch_id,seq_pos,");
+    for (int d = 0; d < d_model; d++) {
+        fprintf(f, "x_d%d,", d);
+    }
+    for (int d = 0; d < d_model; d++) {
+        fprintf(f, "y_d%d%s", d, d == d_model-1 ? "\n" : ",");
+    }
     
-    // Data
-    for (int sample = 0; sample < num_samples; sample++) {
-        for (int seq = 0; seq < seq_len; seq++) {
-            int idx = sample * seq_len * feature_dim + seq * feature_dim;
-            fprintf(file, "%d,%d,", sample, seq);
+    // Data: one row per (batch, sequence_position)
+    for (int b = 0; b < num_samples; b++) {
+        for (int t = 0; t < seq_len; t++) {
+            fprintf(f, "%d,%d,", b, t);
             
-            for (int feat = 0; feat < feature_dim; feat++) {
-                fprintf(file, "%.6f,", X[idx + feat]);
+            // X features for this (batch, position)
+            for (int d = 0; d < d_model; d++) {
+                int idx = b * seq_len * d_model + t * d_model + d;
+                fprintf(f, "%.6f,", X[idx]);
             }
-            for (int feat = 0; feat < feature_dim - 1; feat++) {
-                fprintf(file, "%.6f,", y[idx + feat]);
+            
+            // Y features for this (batch, position)
+            for (int d = 0; d < d_model; d++) {
+                int idx = b * seq_len * d_model + t * d_model + d;
+                fprintf(f, "%.6f%s", y[idx], d == d_model-1 ? "\n" : ",");
             }
-            fprintf(file, "%.6f\n", y[idx + feature_dim - 1]);
         }
     }
     
-    fclose(file);
+    fclose(f);
     printf("Data saved to %s\n", filename);
 }

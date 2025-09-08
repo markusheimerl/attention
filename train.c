@@ -11,52 +11,36 @@ int main() {
     openblas_set_num_threads(4);
 
     // Parameters
-    const int seq_len = 16;
-    const int feature_dim = 8;
-    const int num_samples = 65536;
-    const int batch_size = 512;
+    const int seq_len = 128;
+    const int d_model = 64;
+    const int num_samples = 1024;
+    const int batch_size = 32;
     
     // Generate synthetic data
     float *X, *y;
-    generate_data(&X, &y, num_samples, seq_len, feature_dim);
-
-    // Initialize network
-    Attention* attn = init_attention(feature_dim, seq_len, batch_size, false);
+    generate_attention_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
+    
+    // Initialize attention layer
+    Attention* attn = init_attention(seq_len, d_model, batch_size);
     
     // Training parameters
     const int num_epochs = 50;
     const float learning_rate = 0.001f;
     const int num_batches = num_samples / batch_size;
     
-    // Allocate batch buffers
-    int seq_size = batch_size * seq_len * feature_dim;
-    float* X_batch = (float*)malloc(seq_size * sizeof(float));
-    float* y_batch = (float*)malloc(seq_size * sizeof(float));
-    
     // Training loop
     for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
         float epoch_loss = 0.0f;
         
         for (int batch = 0; batch < num_batches; batch++) {
-            int start_idx = batch * batch_size;
-            
-            // Copy batch data
-            for (int sample = 0; sample < batch_size; sample++) {
-                for (int seq = 0; seq < seq_len; seq++) {
-                    for (int feat = 0; feat < feature_dim; feat++) {
-                        int src_idx = (start_idx + sample) * seq_len * feature_dim + seq * feature_dim + feat;
-                        int dst_idx = sample * seq_len * feature_dim + seq * feature_dim + feat;
-                        X_batch[dst_idx] = X[src_idx];
-                        y_batch[dst_idx] = y[src_idx];
-                    }
-                }
-            }
-            
+            // Calculate batch offset
+            int batch_offset = batch * batch_size * seq_len * d_model;
+
             // Forward pass
-            forward_pass_attention(attn, X_batch);
+            forward_pass_attention(attn, &X[batch_offset]);
             
             // Calculate loss
-            float loss = calculate_loss_attention(attn, y_batch);
+            float loss = calculate_loss_attention(attn, &y[batch_offset]);
             epoch_loss += loss;
 
             // Don't update weights after final evaluation
@@ -64,7 +48,7 @@ int main() {
 
             // Backward pass
             zero_gradients_attention(attn);
-            backward_pass_attention(attn, X_batch, NULL);
+            backward_pass_attention(attn, &X[batch_offset], NULL);
             
             // Update weights
             update_weights_attention(attn, learning_rate);
@@ -73,7 +57,7 @@ int main() {
         epoch_loss /= num_batches;
 
         // Print progress
-        if (epoch > 0 && epoch % 2 == 0) {
+        if (epoch % 10 == 0) {
             printf("Epoch [%d/%d], Loss: %.8f\n", epoch, num_epochs, epoch_loss);
         }
     }
@@ -81,54 +65,46 @@ int main() {
     // Get timestamp for filenames
     char model_fname[64], data_fname[64];
     time_t now = time(NULL);
-    strftime(model_fname, sizeof(model_fname), "%Y%m%d_%H%M%S_model.bin", localtime(&now));
-    strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_data.csv", localtime(&now));
+    strftime(model_fname, sizeof(model_fname), "%Y%m%d_%H%M%S_attention.bin", localtime(&now));
+    strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_attention_data.csv", localtime(&now));
 
     // Save model and data with timestamped filenames
     save_attention(attn, model_fname);
-    save_data(X, y, num_samples, seq_len, feature_dim, data_fname);
+    save_data(X, y, seq_len, num_samples, d_model, data_fname);
     
     // Load the model back and verify
     printf("\nVerifying saved model...\n");
 
     // Load the model back with original batch_size
     Attention* loaded_attn = load_attention(model_fname, batch_size);
-    
-    // Evaluate on first batch
-    for (int sample = 0; sample < batch_size; sample++) {
-        for (int seq = 0; seq < seq_len; seq++) {
-            for (int feat = 0; feat < feature_dim; feat++) {
-                int src_idx = sample * seq_len * feature_dim + seq * feature_dim + feat;
-                int dst_idx = sample * seq_len * feature_dim + seq * feature_dim + feat;
-                X_batch[dst_idx] = X[src_idx];
-                y_batch[dst_idx] = y[src_idx];
-            }
-        }
-    }
-    
-    // Forward pass with loaded model
-    forward_pass_attention(loaded_attn, X_batch);
+
+    // Forward pass with loaded model on first batch
+    forward_pass_attention(loaded_attn, X);
 
     // Evaluate model performance on first batch
-    printf("Output\tR²\t\tMAE\t\tSample Predictions\n");
-    printf("------\t--------\t--------\t--------------------------------\n");
+    printf("Feature\tR²\t\tMAE\t\tSample Predictions\n");
+    printf("-------\t--------\t--------\t--------------------------------\n");
 
-    for (int i = 0; i < feature_dim; i++) {
-        // Calculate mean for R²
+    for (int d = 0; d < d_model; d++) {
+        // Calculate mean for R² across all positions and batches for this feature
         float y_mean = 0.0f;
-        for (int sample = 0; sample < batch_size; sample++) {
-            for (int seq = 0; seq < seq_len; seq++) {
-                y_mean += y_batch[sample * seq_len * feature_dim + seq * feature_dim + i];
+        int total_elements = batch_size * seq_len;
+        
+        for (int b = 0; b < batch_size; b++) {
+            for (int t = 0; t < seq_len; t++) {
+                int idx = b * seq_len * d_model + t * d_model + d;
+                y_mean += y[idx];
             }
         }
-        y_mean /= (batch_size * seq_len);
+        y_mean /= total_elements;
         
-        // Calculate R² and MAE
+        // Calculate R² and MAE for this feature
         float ss_res = 0.0f, ss_tot = 0.0f, mae = 0.0f;
-        for (int sample = 0; sample < batch_size; sample++) {
-            for (int seq = 0; seq < seq_len; seq++) {
-                float pred = loaded_attn->layer_output[sample * seq_len * feature_dim + seq * feature_dim + i];
-                float actual = y_batch[sample * seq_len * feature_dim + seq * feature_dim + i];
+        for (int b = 0; b < batch_size; b++) {
+            for (int t = 0; t < seq_len; t++) {
+                int idx = b * seq_len * d_model + t * d_model + d;
+                float pred = loaded_attn->output[idx];
+                float actual = y[idx];
                 float diff = pred - actual;
                 
                 ss_res += diff * diff;
@@ -138,13 +114,15 @@ int main() {
         }
         
         float r2 = 1.0f - (ss_res / ss_tot);
-        mae /= (batch_size * seq_len);
+        mae /= total_elements;
         
-        // Print summary
-        printf("f%d\t%.6f\t%.3f\t\t", i, r2, mae);
-        for (int j = 0; j < 3; j++) {
-            float pred = loaded_attn->layer_output[j * seq_len * feature_dim + 0 * feature_dim + i];
-            float actual = y_batch[j * seq_len * feature_dim + 0 * feature_dim + i];
+        // Print summary with sample predictions from first batch, first few positions
+        printf("d%d\t%.6f\t%.3f\t\t", d, r2, mae);
+        for (int sample = 0; sample < 3; sample++) {
+            // Show predictions from batch 0, positions 0, 1, 2
+            int idx = 0 * seq_len * d_model + sample * d_model + d;
+            float pred = loaded_attn->output[idx];
+            float actual = y[idx];
             printf("%.2f/%.2f ", pred, actual);
         }
         printf("\n");
@@ -153,8 +131,6 @@ int main() {
     // Cleanup
     free(X);
     free(y);
-    free(X_batch);
-    free(y_batch);
     free_attention(attn);
     free_attention(loaded_attn);
     
