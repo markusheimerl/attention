@@ -120,15 +120,15 @@ void forward_pass_attention(Attention* attn, float* X) {
                     0.0f, V_b, attn->d_model);
     }
     
-    // Step 2: Compute attention scores = Q * K^T * scale for each batch
+    // Step 2: Compute attention scores = Q * Kᵀ * scale for each batch
     // This is the core 2D operation: sequence positions attending to each other
     for (int b = 0; b < attn->batch_size; b++) {
         float* Q_b = &attn->Q[b * attn->seq_len * attn->d_model];
         float* K_b = &attn->K[b * attn->seq_len * attn->d_model];
         float* scores_b = &attn->scores[b * attn->seq_len * attn->seq_len];
         
-        // scores_b = Q_b * K_b^T * scale
-        // Q_b: [seq_len x d_model], K_b^T: [d_model x seq_len], result: [seq_len x seq_len]
+        // scores_b = Q_b * K_bᵀ * scale
+        // Q_b: [seq_len x d_model], K_bᵀ: [d_model x seq_len], result: [seq_len x seq_len]
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     attn->seq_len, attn->seq_len, attn->d_model,
                     attn->scale, Q_b, attn->d_model,
@@ -224,14 +224,14 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
         float* attn_output_b = &attn->attn_output[b * attn->seq_len * attn->d_model];
         float* grad_attn_output_b = &attn->grad_attn_output[b * attn->seq_len * attn->d_model];
         
-        // grad_W_o += attn_output_b^T * grad_output_b
+        // grad_W_o += attn_output_bᵀ * grad_output_b
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     attn->d_model, attn->d_model, attn->seq_len,
                     1.0f, attn_output_b, attn->d_model,
                     grad_output_b, attn->d_model,
                     1.0f, attn->W_o_grad, attn->d_model);
         
-        // grad_attn_output_b = grad_output_b * W_o^T
+        // grad_attn_output_b = grad_output_b * W_oᵀ
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     attn->seq_len, attn->d_model, attn->d_model,
                     1.0f, grad_output_b, attn->d_model,
@@ -247,14 +247,14 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
         float* grad_weights_b = &attn->grad_weights[b * attn->seq_len * attn->seq_len];
         float* grad_V_b = &attn->grad_V[b * attn->seq_len * attn->d_model];
         
-        // grad_weights_b = grad_attn_output_b * V_b^T
+        // grad_weights_b = grad_attn_output_b * V_bᵀ
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     attn->seq_len, attn->seq_len, attn->d_model,
                     1.0f, grad_attn_output_b, attn->d_model,
                     V_b, attn->d_model,
                     0.0f, grad_weights_b, attn->seq_len);
         
-        // grad_V_b = weights_b^T * grad_attn_output_b
+        // grad_V_b = weights_bᵀ * grad_attn_output_b
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     attn->seq_len, attn->d_model, attn->seq_len,
                     1.0f, weights_b, attn->seq_len,
@@ -299,7 +299,7 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
                     K_b, attn->d_model,
                     0.0f, grad_Q_b, attn->d_model);
         
-        // grad_K_b = grad_scores_b^T * Q_b * scale
+        // grad_K_b = grad_scores_bᵀ * Q_b * scale
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     attn->seq_len, attn->d_model, attn->seq_len,
                     attn->scale, grad_scores_b, attn->seq_len,
@@ -314,28 +314,28 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
         float* grad_K_b = &attn->grad_K[b * attn->seq_len * attn->d_model];
         float* grad_V_b = &attn->grad_V[b * attn->seq_len * attn->d_model];
         
-        // grad_W_q += X_b^T * grad_Q_b
+        // grad_W_q += X_bᵀ * grad_Q_b
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     attn->d_model, attn->d_model, attn->seq_len,
                     1.0f, X_b, attn->d_model,
                     grad_Q_b, attn->d_model,
                     1.0f, attn->W_q_grad, attn->d_model);
         
-        // grad_W_k += X_b^T * grad_K_b
+        // grad_W_k += X_bᵀ * grad_K_b
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     attn->d_model, attn->d_model, attn->seq_len,
                     1.0f, X_b, attn->d_model,
                     grad_K_b, attn->d_model,
                     1.0f, attn->W_k_grad, attn->d_model);
         
-        // grad_W_v += X_b^T * grad_V_b
+        // grad_W_v += X_bᵀ * grad_V_b
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     attn->d_model, attn->d_model, attn->seq_len,
                     1.0f, X_b, attn->d_model,
                     grad_V_b, attn->d_model,
                     1.0f, attn->W_v_grad, attn->d_model);
         
-        // grad_X_b = grad_Q_b * W_q^T + grad_K_b * W_k^T + grad_V_b * W_v^T
+        // grad_X_b = grad_Q_b * W_qᵀ + grad_K_b * W_kᵀ + grad_V_b * W_vᵀ
         if (grad_X != NULL) {
             float* grad_X_b = &grad_X[b * attn->seq_len * attn->d_model];
             
