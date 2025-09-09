@@ -1,7 +1,7 @@
 #include "attention.h"
 
 // Initialize the attention layer
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle) {
+Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cublasLtHandle_t cublaslt_handle) {
     Attention* attn = (Attention*)malloc(sizeof(Attention));
     
     // Store dimensions
@@ -18,8 +18,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     attn->t = 0;
     attn->weight_decay = 0.01f;
     
-    // Initialize cuBLAS and cuBLASLt
-    attn->cublas_handle = cublas_handle;
+    // Initialize cuBLASLt
     attn->cublaslt_handle = cublaslt_handle;
     
     int weight_size = d_model * d_model;
@@ -80,6 +79,9 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     CHECK_CUDA(cudaMalloc(&attn->d_grad_Q, seq_batch_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_grad_K, seq_batch_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_grad_V, seq_batch_size * sizeof(float)));
+    
+    // Allocate single device float for loss computation
+    CHECK_CUDA(cudaMalloc(&attn->d_loss_result, sizeof(float)));
     
     // Copy weights to device
     CHECK_CUDA(cudaMemcpy(attn->d_W_q, h_W_q, weight_size * sizeof(float), cudaMemcpyHostToDevice));
@@ -233,6 +235,10 @@ void free_attention(Attention* attn) {
     cudaFree(attn->d_attn_output); cudaFree(attn->d_output);
     cudaFree(attn->d_grad_output); cudaFree(attn->d_grad_attn_output); cudaFree(attn->d_grad_weights);
     cudaFree(attn->d_grad_scores); cudaFree(attn->d_grad_Q); cudaFree(attn->d_grad_K); cudaFree(attn->d_grad_V);
+    
+    // Free loss computation buffer
+    cudaFree(attn->d_loss_result);
+    
     free(attn);
 }
 
@@ -442,11 +448,12 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                                   NULL, NULL, 0, 0));
 }
 
-// CUDA kernel for gradient calculation
-__global__ static void compute_loss_gradient_kernel_attention(float* grad_output, float* predictions, float* targets, int size) {
+// CUDA kernel for computing loss and gradient
+__global__ static void compute_loss_and_gradient_kernel_attention(float* grad_output, float* predictions, float* targets, float* loss_result, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
         grad_output[idx] = predictions[idx] - targets[idx];
+        atomicAdd(loss_result, grad_output[idx] * grad_output[idx]);
     }
 }
 
@@ -456,12 +463,20 @@ float calculate_loss_attention(Attention* attn, float* d_y) {
     int total_elements = attn->batch_size * attn->seq_len * attn->d_model;
     int block_size = 256;
     int num_blocks = (total_elements + block_size - 1) / block_size;
-    compute_loss_gradient_kernel_attention<<<num_blocks, block_size>>>(attn->d_grad_output, attn->d_output, d_y, total_elements);
     
-    float loss = 0.0f;
-    CHECK_CUBLAS(cublasSdot(attn->cublas_handle, total_elements, attn->d_grad_output, 1, attn->d_grad_output, 1, &loss));
+    // Reset loss accumulator to zero
+    CHECK_CUDA(cudaMemset(attn->d_loss_result, 0, sizeof(float)));
     
-    return loss / total_elements;
+    // Compute gradient and accumulate loss
+    compute_loss_and_gradient_kernel_attention<<<num_blocks, block_size>>>(
+        attn->d_grad_output, attn->d_output, d_y, attn->d_loss_result, total_elements
+    );
+    
+    // Copy result back to host
+    float total_loss;
+    CHECK_CUDA(cudaMemcpy(&total_loss, attn->d_loss_result, sizeof(float), cudaMemcpyDeviceToHost));
+    
+    return total_loss / total_elements;
 }
 
 // Zero gradients
@@ -746,7 +761,7 @@ void save_attention(Attention* attn, const char* filename) {
 }
 
 // Load attention weights from binary file
-Attention* load_attention(const char* filename, int custom_batch_size, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle) {
+Attention* load_attention(const char* filename, int custom_batch_size, cublasLtHandle_t cublaslt_handle) {
     FILE* file = fopen(filename, "rb");
     if (!file) {
         printf("Error opening file for reading: %s\n", filename);
@@ -764,7 +779,7 @@ Attention* load_attention(const char* filename, int custom_batch_size, cublasHan
     // Use custom_batch_size if provided, otherwise use stored value
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
-    Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, cublas_handle, cublaslt_handle);
+    Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, cublaslt_handle);
     
     int weight_size = d_model * d_model;
     

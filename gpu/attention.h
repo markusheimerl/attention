@@ -6,7 +6,6 @@
 #include <string.h>
 #include <math.h>
 #include <stdbool.h>
-#include <cublas_v2.h>
 #include <cublasLt.h>
 #include <cuda_runtime.h>
 
@@ -17,18 +16,6 @@
     if (err != cudaSuccess) { \
         fprintf(stderr, "CUDA error in %s:%d: %s\n", __FILE__, __LINE__, \
                 cudaGetErrorString(err)); \
-        exit(EXIT_FAILURE); \
-    } \
-} while(0)
-#endif
-
-// cuBLAS Error checking macro
-#ifndef CHECK_CUBLAS
-#define CHECK_CUBLAS(call) do { \
-    cublasStatus_t status = call; \
-    if (status != CUBLAS_STATUS_SUCCESS) { \
-        fprintf(stderr, "cuBLAS error in %s:%d: %d\n", __FILE__, __LINE__, \
-                (int)status); \
         exit(EXIT_FAILURE); \
     } \
 } while(0)
@@ -88,8 +75,10 @@ typedef struct {
     float* d_grad_K;           // [batch_size x seq_len x d_model]
     float* d_grad_V;           // [batch_size x seq_len x d_model]
 
-    // cuBLAS and cuBLASLt handles
-    cublasHandle_t cublas_handle;
+    // Loss computation buffer
+    float* d_loss_result;      // [1]
+
+    // cuBLASLt handle
     cublasLtHandle_t cublaslt_handle;
     
     // cuBLASLt descriptors and layouts
@@ -130,7 +119,7 @@ typedef struct {
 } Attention;
 
 // Function prototypes
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle);
+Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cublasLtHandle_t cublaslt_handle);
 void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, float* d_X);
 float calculate_loss_attention(Attention* attn, float* d_y);
@@ -138,6 +127,6 @@ void zero_gradients_attention(Attention* attn);
 void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X);
 void update_weights_attention(Attention* attn, float learning_rate);
 void save_attention(Attention* attn, const char* filename);
-Attention* load_attention(const char* filename, int custom_batch_size, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle);
+Attention* load_attention(const char* filename, int custom_batch_size, cublasLtHandle_t cublaslt_handle);
 
 #endif

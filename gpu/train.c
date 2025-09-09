@@ -8,11 +8,8 @@
 int main() {
     srand(time(NULL));
 
-    // Initialize cuBLAS and cuBLASLt
-    cublasHandle_t cublas_handle;
+    // Initialize cuBLASLt
     cublasLtHandle_t cublaslt_handle;
-    CHECK_CUBLAS(cublasCreate(&cublas_handle));
-    CHECK_CUBLAS(cublasSetMathMode(cublas_handle, CUBLAS_TENSOR_OP_MATH));
     CHECK_CUBLASLT(cublasLtCreate(&cublaslt_handle));
 
     // Parameters
@@ -26,7 +23,7 @@ int main() {
     generate_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
     
     // Initialize attention layer
-    Attention* attn = init_attention(seq_len, d_model, batch_size, false, cublas_handle, cublaslt_handle);
+    Attention* attn = init_attention(seq_len, d_model, batch_size, false, cublaslt_handle);
     
     // Training parameters
     const int num_epochs = 50;
@@ -90,7 +87,7 @@ int main() {
     printf("\nVerifying saved model...\n");
 
     // Load the model back with original batch_size
-    Attention* loaded_attn = load_attention(model_fname, batch_size, cublas_handle, cublaslt_handle);
+    Attention* loaded_attn = load_attention(model_fname, batch_size, cublaslt_handle);
 
     // Forward pass with loaded model on first batch
     CHECK_CUDA(cudaMemcpy(d_X, X, batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
@@ -155,7 +152,6 @@ int main() {
     CHECK_CUDA(cudaFree(d_y));
     free_attention(attn);
     free_attention(loaded_attn);
-    CHECK_CUBLAS(cublasDestroy(cublas_handle));
     CHECK_CUBLASLT(cublasLtDestroy(cublaslt_handle));
     
     return 0;
