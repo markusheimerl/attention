@@ -409,7 +409,7 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                                   attn->d_scores, attn->scores_layout,
                                   NULL, NULL, 0, 0));
     
-    // Step 3: Apply softmax row-wise
+    // Step 3: Apply softmax
     dim3 grid(attn->batch_size, attn->seq_len);
     if (attn->is_causal) {
         softmax_causal_forward_kernel_attention<<<grid, 1>>>(attn->d_attn_weights, attn->d_scores, attn->batch_size, attn->seq_len);
@@ -609,7 +609,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                       &alpha,
                                       attn->d_grad_K, attn->K_layout,
                                       attn->d_W_k, attn->W_k_broadcast_layout,
-                                      &alpha,  // Note: using alpha (=1.0) to accumulate
+                                      &alpha,
                                       d_grad_X, attn->Q_layout,
                                       d_grad_X, attn->Q_layout,
                                       NULL, NULL, 0, 0));
@@ -620,7 +620,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                       &alpha,
                                       attn->d_grad_V, attn->V_layout,
                                       attn->d_W_v, attn->W_v_broadcast_layout,
-                                      &alpha,  // Note: using alpha (=1.0) to accumulate
+                                      &alpha,
                                       d_grad_X, attn->Q_layout,
                                       d_grad_X, attn->Q_layout,
                                       NULL, NULL, 0, 0));
