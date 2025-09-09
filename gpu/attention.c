@@ -428,13 +428,12 @@ void zero_gradients_attention(Attention* attn) {
 void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
-    const float gamma = 1.0f / attn->batch_size; // For averaging gradients
     
     // Step 5 (backward): Gradient through output projection
-    // ∂L/∂W_o = (1/batch_size) * ∑_batches(Z_b^T * ∂L/∂Y_b)
+    // ∂L/∂W_o = ∑_batches(Z_b^T * ∂L/∂Y_b)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
-                                  &gamma,  // Scale by 1/batch_size for averaging
+                                  &alpha,
                                   attn->d_attn_output, attn->attn_out_for_wgrad_layout,
                                   attn->d_grad_output, attn->grad_out_for_wgrad_layout,
                                   &beta,
@@ -505,10 +504,10 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   NULL, NULL, 0, 0));
     
     // Step 1 (backward): Gradient through linear projections
-    // ∂L/∂W_q = (1/batch_size) * X^T * ∂L/∂Q
+    // ∂L/∂W_q = X^T * ∂L/∂Q
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
-                                  &gamma,  // Scale by 1/batch_size for averaging
+                                  &alpha,
                                   d_X, attn->X_for_wgrad_layout,
                                   attn->d_grad_Q, attn->grad_QKV_for_wgrad_layout,
                                   &beta,
@@ -516,10 +515,10 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   attn->d_W_q_grad, attn->W_grad_layout,
                                   NULL, NULL, 0, 0));
     
-    // ∂L/∂W_k = (1/batch_size) * X^T * ∂L/∂K
+    // ∂L/∂W_k = X^T * ∂L/∂K
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
-                                  &gamma,
+                                  &alpha,
                                   d_X, attn->X_for_wgrad_layout,
                                   attn->d_grad_K, attn->grad_QKV_for_wgrad_layout,
                                   &beta,
@@ -527,10 +526,10 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   attn->d_W_k_grad, attn->W_grad_layout,
                                   NULL, NULL, 0, 0));
     
-    // ∂L/∂W_v = (1/batch_size) * X^T * ∂L/∂V
+    // ∂L/∂W_v = X^T * ∂L/∂V
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
-                                  &gamma,
+                                  &alpha,
                                   d_X, attn->X_for_wgrad_layout,
                                   attn->d_grad_V, attn->grad_QKV_for_wgrad_layout,
                                   &beta,

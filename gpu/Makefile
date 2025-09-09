@@ -19,7 +19,7 @@ train.o: train.c attention.h ../data.h
 	$(CC) $(CFLAGS) $(CUDAFLAGS) -c train.c -o $@
 
 run: train.out
-	CUBLASLT_LOG_LEVEL=1 time ./train.out
+	@time ./train.out
 
 clean:
 	rm -f *.out *.o *.csv *.bin
