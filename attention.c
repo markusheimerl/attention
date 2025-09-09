@@ -120,13 +120,13 @@ void forward_pass_attention(Attention* attn, float* X) {
     }
     
     // Step 2: Compute attention scores
-    // S = QK^T/√d_model
+    // S = QKᵀ/√d_model
     for (int b = 0; b < attn->batch_size; b++) {
         float* Q_b = &attn->Q[b * attn->seq_len * attn->d_model];
         float* K_b = &attn->K[b * attn->seq_len * attn->d_model];
         float* scores_b = &attn->scores[b * attn->seq_len * attn->seq_len];
         
-        // S = QK^T/√d_model
+        // S = QKᵀ/√d_model
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     attn->seq_len, attn->seq_len, attn->d_model,
                     attn->scale, Q_b, attn->d_model,
@@ -218,20 +218,20 @@ void zero_gradients_attention(Attention* attn) {
 // Backward pass
 void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
     // Step 5 (backward): Gradient through output projection
-    // ∂L/∂W_o = Z^T(∂L/∂Y), ∂L/∂Z = (∂L/∂Y)W_o^T
+    // ∂L/∂W_o = Zᵀ(∂L/∂Y), ∂L/∂Z = (∂L/∂Y)W_oᵀ
     for (int b = 0; b < attn->batch_size; b++) {
         float* grad_output_b = &attn->grad_output[b * attn->seq_len * attn->d_model];
         float* attn_output_b = &attn->attn_output[b * attn->seq_len * attn->d_model];
         float* grad_attn_output_b = &attn->grad_attn_output[b * attn->seq_len * attn->d_model];
         
-        // ∂L/∂W_o += Z^T(∂L/∂Y)
+        // ∂L/∂W_o += Zᵀ(∂L/∂Y)
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     attn->d_model, attn->d_model, attn->seq_len,
                     1.0f, attn_output_b, attn->d_model,
                     grad_output_b, attn->d_model,
                     1.0f, attn->W_o_grad, attn->d_model);
         
-        // ∂L/∂Z = (∂L/∂Y)W_o^T
+        // ∂L/∂Z = (∂L/∂Y)W_oᵀ
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     attn->seq_len, attn->d_model, attn->d_model,
                     1.0f, grad_output_b, attn->d_model,
@@ -240,7 +240,7 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
     }
     
     // Step 4 (backward): Gradient through attention output computation
-    // ∂L/∂A = (∂L/∂Z)V^T, ∂L/∂V = A^T(∂L/∂Z)
+    // ∂L/∂A = (∂L/∂Z)Vᵀ, ∂L/∂V = Aᵀ(∂L/∂Z)
     for (int b = 0; b < attn->batch_size; b++) {
         float* grad_attn_output_b = &attn->grad_attn_output[b * attn->seq_len * attn->d_model];
         float* weights_b = &attn->attn_weights[b * attn->seq_len * attn->seq_len];
@@ -248,14 +248,14 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
         float* grad_weights_b = &attn->grad_weights[b * attn->seq_len * attn->seq_len];
         float* grad_V_b = &attn->grad_V[b * attn->seq_len * attn->d_model];
         
-        // ∂L/∂A = (∂L/∂Z)V^T
+        // ∂L/∂A = (∂L/∂Z)Vᵀ
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     attn->seq_len, attn->seq_len, attn->d_model,
                     1.0f, grad_attn_output_b, attn->d_model,
                     V_b, attn->d_model,
                     0.0f, grad_weights_b, attn->seq_len);
         
-        // ∂L/∂V = A^T(∂L/∂Z)
+        // ∂L/∂V = Aᵀ(∂L/∂Z)
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     attn->seq_len, attn->d_model, attn->seq_len,
                     1.0f, weights_b, attn->seq_len,
@@ -287,7 +287,7 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
     }
     
     // Step 2 (backward): Gradient through attention scores
-    // ∂L/∂Q = (∂L/∂S)K/√d_model, ∂L/∂K = (∂L/∂S)^TQ/√d_model
+    // ∂L/∂Q = (∂L/∂S)K/√d_model, ∂L/∂K = (∂L/∂S)ᵀQ/√d_model
     for (int b = 0; b < attn->batch_size; b++) {
         float* grad_scores_b = &attn->grad_scores[b * attn->seq_len * attn->seq_len];
         float* Q_b = &attn->Q[b * attn->seq_len * attn->d_model];
@@ -302,7 +302,7 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
                     K_b, attn->d_model,
                     0.0f, grad_Q_b, attn->d_model);
         
-        // ∂L/∂K = (∂L/∂S)^TQ/√d_model
+        // ∂L/∂K = (∂L/∂S)ᵀQ/√d_model
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     attn->seq_len, attn->d_model, attn->seq_len,
                     attn->scale, grad_scores_b, attn->seq_len,
@@ -311,54 +311,54 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
     }
     
     // Step 1 (backward): Gradient through linear projections
-    // ∂L/∂W_q = X^T(∂L/∂Q), ∂L/∂W_k = X^T(∂L/∂K), ∂L/∂W_v = X^T(∂L/∂V)
-    // ∂L/∂X = (∂L/∂Q)W_q^T + (∂L/∂K)W_k^T + (∂L/∂V)W_v^T
+    // ∂L/∂W_q = Xᵀ(∂L/∂Q), ∂L/∂W_k = Xᵀ(∂L/∂K), ∂L/∂W_v = Xᵀ(∂L/∂V)
+    // ∂L/∂X = (∂L/∂Q)W_qᵀ + (∂L/∂K)W_kᵀ + (∂L/∂V)W_vᵀ
     for (int b = 0; b < attn->batch_size; b++) {
         float* X_b = &X[b * attn->seq_len * attn->d_model];
         float* grad_Q_b = &attn->grad_Q[b * attn->seq_len * attn->d_model];
         float* grad_K_b = &attn->grad_K[b * attn->seq_len * attn->d_model];
         float* grad_V_b = &attn->grad_V[b * attn->seq_len * attn->d_model];
         
-        // ∂L/∂W_q += X^T(∂L/∂Q)
+        // ∂L/∂W_q += Xᵀ(∂L/∂Q)
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     attn->d_model, attn->d_model, attn->seq_len,
                     1.0f, X_b, attn->d_model,
                     grad_Q_b, attn->d_model,
                     1.0f, attn->W_q_grad, attn->d_model);
         
-        // ∂L/∂W_k += X^T(∂L/∂K)
+        // ∂L/∂W_k += Xᵀ(∂L/∂K)
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     attn->d_model, attn->d_model, attn->seq_len,
                     1.0f, X_b, attn->d_model,
                     grad_K_b, attn->d_model,
                     1.0f, attn->W_k_grad, attn->d_model);
         
-        // ∂L/∂W_v += X^T(∂L/∂V)
+        // ∂L/∂W_v += Xᵀ(∂L/∂V)
         cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
                     attn->d_model, attn->d_model, attn->seq_len,
                     1.0f, X_b, attn->d_model,
                     grad_V_b, attn->d_model,
                     1.0f, attn->W_v_grad, attn->d_model);
         
-        // ∂L/∂X = (∂L/∂Q)W_q^T + (∂L/∂K)W_k^T + (∂L/∂V)W_v^T
+        // ∂L/∂X = (∂L/∂Q)W_qᵀ + (∂L/∂K)W_kᵀ + (∂L/∂V)W_vᵀ
         if (grad_X != NULL) {
             float* grad_X_b = &grad_X[b * attn->seq_len * attn->d_model];
             
-            // ∂L/∂X = (∂L/∂Q)W_q^T
+            // ∂L/∂X = (∂L/∂Q)W_qᵀ
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                         attn->seq_len, attn->d_model, attn->d_model,
                         1.0f, grad_Q_b, attn->d_model,
                         attn->W_q, attn->d_model,
                         0.0f, grad_X_b, attn->d_model);
             
-            // ∂L/∂X += (∂L/∂K)W_k^T
+            // ∂L/∂X += (∂L/∂K)W_kᵀ
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                         attn->seq_len, attn->d_model, attn->d_model,
                         1.0f, grad_K_b, attn->d_model,
                         attn->W_k, attn->d_model,
                         1.0f, grad_X_b, attn->d_model);
             
-            // ∂L/∂X += (∂L/∂V)W_v^T
+            // ∂L/∂X += (∂L/∂V)W_vᵀ
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                         attn->seq_len, attn->d_model, attn->d_model,
                         1.0f, grad_V_b, attn->d_model,
