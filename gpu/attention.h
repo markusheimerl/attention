@@ -124,7 +124,7 @@ typedef struct {
     int seq_len;
     int d_model;
     int batch_size;
-    float scale;  // 1/sqrt(d_model) for scaled dot-product attention
+    float scale;
 } Attention;
 
 // CUDA kernel prototypes
