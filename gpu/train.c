@@ -23,7 +23,7 @@ int main() {
     
     // Generate synthetic data
     float *X, *y;
-    generate_attention_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
+    generate_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
     
     // Initialize attention layer
     Attention* attn = init_attention(seq_len, d_model, batch_size, false, cublas_handle, cublaslt_handle);

@@ -1,6 +1,6 @@
 #include "data.h"
 
-void generate_attention_data(float** X, float** y, int seq_len, int num_samples, int d_model,
+void generate_data(float** X, float** y, int seq_len, int num_samples, int d_model,
                            float range_min, float range_max) {
     // Row-major layout: [num_samples x seq_len x d_model]
     const int total = num_samples * seq_len * d_model;
