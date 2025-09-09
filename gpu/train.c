@@ -26,7 +26,7 @@ int main() {
     generate_attention_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
     
     // Initialize attention layer
-    Attention* attn = init_attention(seq_len, d_model, batch_size, cublas_handle, cublaslt_handle);
+    Attention* attn = init_attention(seq_len, d_model, batch_size, false, cublas_handle, cublaslt_handle);
     
     // Training parameters
     const int num_epochs = 50;

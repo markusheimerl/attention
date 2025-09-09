@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdbool.h>
 #include <cublas_v2.h>
 #include <cublasLt.h>
 #include <cuda_runtime.h>
@@ -125,15 +126,18 @@ typedef struct {
     int d_model;
     int batch_size;
     float scale;
+    bool is_causal;
 } Attention;
 
 // CUDA kernel prototypes
 __global__ void softmax_forward_kernel_attention(float* weights, float* scores, int batch_size, int seq_len);
+__global__ void softmax_causal_forward_kernel_attention(float* weights, float* scores, int batch_size, int seq_len);
 __global__ void softmax_backward_kernel_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len);
+__global__ void softmax_causal_backward_kernel_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len);
 __global__ void adamw_update_kernel_attention(float* weight, float* grad, float* m, float* v, float beta1, float beta2, float epsilon, float learning_rate, float weight_decay, float alpha_t, int size, int batch_size);
 
 // Function prototypes
-Attention* init_attention(int seq_len, int d_model, int batch_size, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle);
+Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cublasHandle_t cublas_handle, cublasLtHandle_t cublaslt_handle);
 void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, float* d_X);
 float calculate_loss_attention(Attention* attn, float* d_y);
