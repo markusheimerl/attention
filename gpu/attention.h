@@ -102,17 +102,29 @@ typedef struct {
     cublasLtMatrixLayout_t W_grad_layout; // Weight gradients [d_model x d_model]
     
     // Matrix layouts for attention operations
-    cublasLtMatrixLayout_t Q_layout;      // Query [seq_len x d_model]
-    cublasLtMatrixLayout_t K_layout;      // Key [seq_len x d_model]
-    cublasLtMatrixLayout_t V_layout;      // Value [seq_len x d_model]
-    cublasLtMatrixLayout_t scores_layout; // Attention scores [seq_len x seq_len]
-    cublasLtMatrixLayout_t weights_layout; // Attention weights [seq_len x seq_len]
+    cublasLtMatrixLayout_t Q_layout;      // Query [seq_len x d_model] batched
+    cublasLtMatrixLayout_t K_layout;      // Key [seq_len x d_model] batched
+    cublasLtMatrixLayout_t V_layout;      // Value [seq_len x d_model] batched
+    cublasLtMatrixLayout_t scores_layout; // Attention scores [seq_len x seq_len] batched
+    cublasLtMatrixLayout_t weights_layout; // Attention weights [seq_len x seq_len] batched
+    
+    // Broadcast layouts for weight matrices
+    cublasLtMatrixLayout_t W_q_broadcast_layout; // Weight matrices for broadcasting
+    cublasLtMatrixLayout_t W_k_broadcast_layout;
+    cublasLtMatrixLayout_t W_v_broadcast_layout; 
+    cublasLtMatrixLayout_t W_o_broadcast_layout;
+
+    // Special layouts for weight gradient computation (input batched, output single)
+    cublasLtMatrixLayout_t X_for_wgrad_layout;     // X layout for weight grad computation
+    cublasLtMatrixLayout_t grad_QKV_for_wgrad_layout; // grad_Q/K/V layout for weight grad computation
+    cublasLtMatrixLayout_t attn_out_for_wgrad_layout;  // attn_output layout for weight grad computation
+    cublasLtMatrixLayout_t grad_out_for_wgrad_layout;  // grad_output layout for weight grad computation
     
     // Dimensions
     int seq_len;
     int d_model;
     int batch_size;
-    float scale;  // 1/sqrt(d_model) for scaled dot-product attention
+    float scale;
 } Attention;
 
 // CUDA kernel prototypes
