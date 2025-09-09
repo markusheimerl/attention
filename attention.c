@@ -264,7 +264,7 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
     }
     
     // Step 3 (backward): Gradient through softmax
-    // ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A)
+    // ∂L/∂S = A⊙(∂L/∂A - ∑_j (∂L/∂A)⊙A)
     for (int b = 0; b < attn->batch_size; b++) {
         float* grad_weights_b = &attn->grad_weights[b * attn->seq_len * attn->seq_len];
         float* weights_b = &attn->attn_weights[b * attn->seq_len * attn->seq_len];

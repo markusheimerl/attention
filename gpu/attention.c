@@ -430,7 +430,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     const float beta = 0.0f;
     
     // Step 5 (backward): Gradient through output projection
-    // ∂L/∂W_o = ∑_batches(Z_bᵀ * ∂L/∂Y_b)
+    // ∂L/∂W_o = Zᵀ(∂L/∂Y)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &alpha,
@@ -476,12 +476,12 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   NULL, NULL, 0, 0));
     
     // Step 3 (backward): Gradient through softmax
-    // ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A)
+    // ∂L/∂S = A⊙(∂L/∂A - ∑_j (∂L/∂A)⊙A)
     dim3 grid(attn->batch_size, attn->seq_len);
     softmax_backward_kernel_attention<<<grid, 1>>>(attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->seq_len);
     
     // Step 2 (backward): Gradient through attention scores
-    // ∂L/∂Q = (∂L/∂S)K/√d_model
+    // ∂L/∂Q = (∂L/∂S)(K/√d_model)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_desc,
                                   &attn->scale,
@@ -492,7 +492,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   attn->d_grad_Q, attn->Q_layout,
                                   NULL, NULL, 0, 0));
     
-    // ∂L/∂K = (∂L/∂S)ᵀQ/√d_model
+    // ∂L/∂K = (∂L/∂S)ᵀ(Q/√d_model)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &attn->scale,
@@ -504,7 +504,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   NULL, NULL, 0, 0));
     
     // Step 1 (backward): Gradient through linear projections
-    // ∂L/∂W_q = Xᵀ * ∂L/∂Q
+    // ∂L/∂W_q = Xᵀ(∂L/∂Q)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &alpha,
@@ -515,7 +515,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   attn->d_W_q_grad, attn->W_grad_layout,
                                   NULL, NULL, 0, 0));
     
-    // ∂L/∂W_k = Xᵀ * ∂L/∂K
+    // ∂L/∂W_k = Xᵀ(∂L/∂K)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &alpha,
@@ -526,7 +526,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   attn->d_W_k_grad, attn->W_grad_layout,
                                   NULL, NULL, 0, 0));
     
-    // ∂L/∂W_v = Xᵀ * ∂L/∂V
+    // ∂L/∂W_v = Xᵀ(∂L/∂V)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &alpha,
