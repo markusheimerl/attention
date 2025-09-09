@@ -238,7 +238,7 @@ void free_attention(Attention* attn) {
 
 // CUDA kernel for softmax forward pass
 // A_ij = exp(S_ij)/∑_k exp(S_ik)
-__global__ void softmax_forward_kernel_attention(float* weights, float* scores, int batch_size, int seq_len) {
+__global__ static void softmax_forward_kernel_attention(float* weights, float* scores, int batch_size, int seq_len) {
     int b = blockIdx.x;
     int i = blockIdx.y;
     
@@ -269,7 +269,7 @@ __global__ void softmax_forward_kernel_attention(float* weights, float* scores, 
 }
 
 // CUDA kernel for causal softmax forward pass
-__global__ void softmax_causal_forward_kernel_attention(float* weights, float* scores, int batch_size, int seq_len) {
+__global__ static void softmax_causal_forward_kernel_attention(float* weights, float* scores, int batch_size, int seq_len) {
     int b = blockIdx.x;
     int i = blockIdx.y;
     
@@ -305,7 +305,7 @@ __global__ void softmax_causal_forward_kernel_attention(float* weights, float* s
 
 // CUDA kernel for softmax backward pass
 // ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A)
-__global__ void softmax_backward_kernel_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len) {
+__global__ static void softmax_backward_kernel_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len) {
     int b = blockIdx.x;
     int i = blockIdx.y;
     
@@ -330,7 +330,7 @@ __global__ void softmax_backward_kernel_attention(float* grad_scores, float* gra
 }
 
 // CUDA kernel for causal softmax backward pass
-__global__ void softmax_causal_backward_kernel_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len) {
+__global__ static void softmax_causal_backward_kernel_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len) {
     int b = blockIdx.x;
     int i = blockIdx.y;
     
@@ -355,25 +355,6 @@ __global__ void softmax_causal_backward_kernel_attention(float* grad_scores, flo
         } else {
             grad_scores_b[idx] = 0.0f;
         }
-    }
-}
-
-// CUDA kernel for AdamW update
-__global__ void adamw_update_kernel_attention(float* weight, float* grad, float* m, float* v,
-                                             float beta1, float beta2, float epsilon, float learning_rate,
-                                             float weight_decay, float alpha_t, int size, int batch_size) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < size) {
-        float g = grad[idx] / batch_size;
-        
-        // m = β₁m + (1-β₁)(∂L/∂W)
-        m[idx] = beta1 * m[idx] + (1.0f - beta1) * g;
-        // v = β₂v + (1-β₂)(∂L/∂W)²
-        v[idx] = beta2 * v[idx] + (1.0f - beta2) * g * g;
-        
-        float update = alpha_t * m[idx] / (sqrtf(v[idx]) + epsilon);
-        // W = (1-λη)W - η(m/(1-β₁ᵗ))/√(v/(1-β₂ᵗ) + ε)
-        weight[idx] = weight[idx] * (1.0f - learning_rate * weight_decay) - update;
     }
 }
 
@@ -461,24 +442,25 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                                   NULL, NULL, 0, 0));
 }
 
+// CUDA kernel for gradient calculation
+__global__ static void compute_loss_gradient_kernel_attention(float* grad_output, float* predictions, float* targets, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        grad_output[idx] = predictions[idx] - targets[idx];
+    }
+}
+
 // Calculate loss
 float calculate_loss_attention(Attention* attn, float* d_y) {
-    int total_elements = attn->batch_size * attn->seq_len * attn->d_model;
-    
     // ∂L/∂Y = Y - Y_true
-    const float alpha = 1.0f;
-    const float beta = -1.0f;
-    CHECK_CUBLAS(cublasSgeam(attn->cublas_handle, 
-                            CUBLAS_OP_N, CUBLAS_OP_N,
-                            total_elements, 1,
-                            &alpha, attn->d_output, total_elements,
-                            &beta, d_y, total_elements,
-                            attn->d_grad_output, total_elements));
+    int total_elements = attn->batch_size * attn->seq_len * attn->d_model;
+    int block_size = 256;
+    int num_blocks = (total_elements + block_size - 1) / block_size;
+    compute_loss_gradient_kernel_attention<<<num_blocks, block_size>>>(attn->d_grad_output, attn->d_output, d_y, total_elements);
     
-    // Calculate MSE loss
     float loss = 0.0f;
-    CHECK_CUBLAS(cublasSdot(attn->cublas_handle, total_elements, 
-                           attn->d_grad_output, 1, attn->d_grad_output, 1, &loss));
+    CHECK_CUBLAS(cublasSdot(attn->cublas_handle, total_elements, attn->d_grad_output, 1, attn->d_grad_output, 1, &loss));
+    
     return loss / total_elements;
 }
 
@@ -642,6 +624,25 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                       d_grad_X, attn->Q_layout,
                                       d_grad_X, attn->Q_layout,
                                       NULL, NULL, 0, 0));
+    }
+}
+
+// CUDA kernel for AdamW update
+__global__ static void adamw_update_kernel_attention(float* weight, float* grad, float* m, float* v,
+                                             float beta1, float beta2, float epsilon, float learning_rate,
+                                             float weight_decay, float alpha_t, int size, int batch_size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        float g = grad[idx] / batch_size;
+        
+        // m = β₁m + (1-β₁)(∂L/∂W)
+        m[idx] = beta1 * m[idx] + (1.0f - beta1) * g;
+        // v = β₂v + (1-β₂)(∂L/∂W)²
+        v[idx] = beta2 * v[idx] + (1.0f - beta2) * g * g;
+        
+        float update = alpha_t * m[idx] / (sqrtf(v[idx]) + epsilon);
+        // W = (1-λη)W - η(m/(1-β₁ᵗ))/√(v/(1-β₂ᵗ) + ε)
+        weight[idx] = weight[idx] * (1.0f - learning_rate * weight_decay) - update;
     }
 }
 
