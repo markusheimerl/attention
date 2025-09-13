@@ -81,34 +81,17 @@ typedef struct {
     // cuBLASLt handle
     cublasLtHandle_t cublaslt_handle;
     
-    // cuBLASLt descriptors and layouts
-    cublasLtMatmulDesc_t matmul_desc;
-    cublasLtMatmulDesc_t matmul_NT_desc;  // No transpose A, transpose B
-    cublasLtMatmulDesc_t matmul_TN_desc;  // Transpose A, no transpose B
+    // cuBLASLt descriptors
+    cublasLtMatmulDesc_t matmul_NN_desc; // A * B
+    cublasLtMatmulDesc_t matmul_NT_desc; // A * B^T
+    cublasLtMatmulDesc_t matmul_TN_desc; // A^T * B
     
-    // Matrix layouts for weight operations
-    cublasLtMatrixLayout_t W_layout;      // Weight matrices [d_model x d_model]
-    cublasLtMatrixLayout_t seq_layout;    // Sequence data [seq_len x d_model]
-    cublasLtMatrixLayout_t W_grad_layout; // Weight gradients [d_model x d_model]
-    
-    // Matrix layouts for attention operations
-    cublasLtMatrixLayout_t Q_layout;      // Query [seq_len x d_model] batched
-    cublasLtMatrixLayout_t K_layout;      // Key [seq_len x d_model] batched
-    cublasLtMatrixLayout_t V_layout;      // Value [seq_len x d_model] batched
-    cublasLtMatrixLayout_t scores_layout; // Attention scores [seq_len x seq_len] batched
-    cublasLtMatrixLayout_t weights_layout; // Attention weights [seq_len x seq_len] batched
-    
-    // Broadcast layouts for weight matrices
-    cublasLtMatrixLayout_t W_q_broadcast_layout; // Weight matrices for broadcasting
-    cublasLtMatrixLayout_t W_k_broadcast_layout;
-    cublasLtMatrixLayout_t W_v_broadcast_layout; 
-    cublasLtMatrixLayout_t W_o_broadcast_layout;
-
-    // Special layouts for weight gradient computation (input batched, output single)
-    cublasLtMatrixLayout_t X_for_wgrad_layout;     // X layout for weight grad computation
-    cublasLtMatrixLayout_t grad_QKV_for_wgrad_layout; // grad_Q/K/V layout for weight grad computation
-    cublasLtMatrixLayout_t attn_out_for_wgrad_layout;  // attn_output layout for weight grad computation
-    cublasLtMatrixLayout_t grad_out_for_wgrad_layout;  // grad_output layout for weight grad computation
+    // Matrix layouts
+    cublasLtMatrixLayout_t weight_layout;           // [d_model x d_model] single matrix
+    cublasLtMatrixLayout_t seq_batch_layout;        // [seq_len x d_model] batched
+    cublasLtMatrixLayout_t attn_batch_layout;       // [seq_len x seq_len] batched  
+    cublasLtMatrixLayout_t weight_broadcast_layout; // [d_model x d_model] broadcast
+    cublasLtMatrixLayout_t flattened_seq_layout;    // [batch_size*seq_len x d_model] for weight gradients
     
     // Dimensions
     int seq_len;

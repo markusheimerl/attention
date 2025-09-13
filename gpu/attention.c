@@ -100,7 +100,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     CHECK_CUDA(cudaMemset(attn->d_W_o_v, 0, weight_size * sizeof(float)));
     
     // Create cuBLASLt matrix multiplication descriptors
-    CHECK_CUBLASLT(cublasLtMatmulDescCreate(&attn->matmul_desc, CUBLAS_COMPUTE_32F_FAST_TF32, CUDA_R_32F));
+    CHECK_CUBLASLT(cublasLtMatmulDescCreate(&attn->matmul_NN_desc, CUBLAS_COMPUTE_32F_FAST_TF32, CUDA_R_32F));
     CHECK_CUBLASLT(cublasLtMatmulDescCreate(&attn->matmul_NT_desc, CUBLAS_COMPUTE_32F_FAST_TF32, CUDA_R_32F));
     CHECK_CUBLASLT(cublasLtMatmulDescCreate(&attn->matmul_TN_desc, CUBLAS_COMPUTE_32F_FAST_TF32, CUDA_R_32F));
     
@@ -118,81 +118,35 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     // Row-major layout order
     cublasLtOrder_t order = CUBLASLT_ORDER_ROW;
     
-    // Create matrix layout descriptors for single batch operations (used for weight gradients)
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->W_layout, CUDA_R_32F, d_model, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
+    // Create matrix layout descriptors
+    // 1. Weight matrices [d_model x d_model] - single matrix
+    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->weight_layout, CUDA_R_32F, d_model, d_model, d_model));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weight_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
     
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->seq_layout, CUDA_R_32F, seq_len, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->seq_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
+    // 2. Sequence data [seq_len x d_model] - batched
+    int64_t seq_batch_stride = seq_len * d_model;
+    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->seq_batch_layout, CUDA_R_32F, seq_len, d_model, d_model));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->seq_batch_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->seq_batch_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->seq_batch_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &seq_batch_stride, sizeof(seq_batch_stride)));
     
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->W_grad_layout, CUDA_R_32F, d_model, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_grad_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
+    // 3. Attention matrices [seq_len x seq_len] - batched
+    int64_t attn_batch_stride = seq_len * seq_len;
+    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->attn_batch_layout, CUDA_R_32F, seq_len, seq_len, seq_len));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->attn_batch_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->attn_batch_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->attn_batch_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &attn_batch_stride, sizeof(attn_batch_stride)));
     
-    // Create batched matrix layout descriptors
-    int64_t batch_stride_seq = seq_len * d_model;
-    int64_t batch_stride_attn = seq_len * seq_len;
-    int64_t zero_stride = 0;  // For broadcasting weights
+    // 4. Weight matrices [d_model x d_model] - broadcast
+    int64_t zero_stride = 0;
+    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->weight_broadcast_layout, CUDA_R_32F, d_model, d_model, d_model));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weight_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weight_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weight_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &zero_stride, sizeof(zero_stride)));
     
-    // Input/output sequence layouts (batched)
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->Q_layout, CUDA_R_32F, seq_len, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->Q_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->Q_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->Q_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &batch_stride_seq, sizeof(batch_stride_seq)));
-    
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->K_layout, CUDA_R_32F, seq_len, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->K_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->K_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->K_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &batch_stride_seq, sizeof(batch_stride_seq)));
-    
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->V_layout, CUDA_R_32F, seq_len, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->V_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->V_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->V_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &batch_stride_seq, sizeof(batch_stride_seq)));
-    
-    // Attention matrix layouts (batched)
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->scores_layout, CUDA_R_32F, seq_len, seq_len, seq_len));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->scores_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->scores_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->scores_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &batch_stride_attn, sizeof(batch_stride_attn)));
-    
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->weights_layout, CUDA_R_32F, seq_len, seq_len, seq_len));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weights_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weights_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weights_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &batch_stride_attn, sizeof(batch_stride_attn)));
-        
-    // Weight matrix layouts for broadcasting (batch_count=batch_size, stride=0)
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->W_q_broadcast_layout, CUDA_R_32F, d_model, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_q_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_q_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_q_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &zero_stride, sizeof(zero_stride)));
-
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->W_k_broadcast_layout, CUDA_R_32F, d_model, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_k_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_k_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_k_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &zero_stride, sizeof(zero_stride)));
-
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->W_v_broadcast_layout, CUDA_R_32F, d_model, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_v_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_v_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_v_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &zero_stride, sizeof(zero_stride)));
-
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->W_o_broadcast_layout, CUDA_R_32F, d_model, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_o_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_o_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->W_o_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &zero_stride, sizeof(zero_stride)));
-    
-    // Special layouts for weight gradient computation (input batched, output single)
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->X_for_wgrad_layout, CUDA_R_32F, batch_size * seq_len, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->X_for_wgrad_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->grad_QKV_for_wgrad_layout, CUDA_R_32F, batch_size * seq_len, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->grad_QKV_for_wgrad_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->attn_out_for_wgrad_layout, CUDA_R_32F, batch_size * seq_len, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->attn_out_for_wgrad_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->grad_out_for_wgrad_layout, CUDA_R_32F, batch_size * seq_len, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->grad_out_for_wgrad_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
+    // 5. Flattened sequence data [batch_size*seq_len x d_model] - for weight gradients
+    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->flattened_seq_layout, CUDA_R_32F, batch_size * seq_len, d_model, d_model));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->flattened_seq_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
     
     // Free host memory
     free(h_W_q); free(h_W_k); free(h_W_v); free(h_W_o);
@@ -203,27 +157,16 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
 // Free attention memory
 void free_attention(Attention* attn) {
     // Destroy cuBLASLt descriptors
-    cublasLtMatmulDescDestroy(attn->matmul_desc);
+    cublasLtMatmulDescDestroy(attn->matmul_NN_desc);
     cublasLtMatmulDescDestroy(attn->matmul_NT_desc);
     cublasLtMatmulDescDestroy(attn->matmul_TN_desc);
     
-    // Destroy layouts
-    cublasLtMatrixLayoutDestroy(attn->W_layout);
-    cublasLtMatrixLayoutDestroy(attn->seq_layout);
-    cublasLtMatrixLayoutDestroy(attn->W_grad_layout);
-    cublasLtMatrixLayoutDestroy(attn->Q_layout);
-    cublasLtMatrixLayoutDestroy(attn->K_layout);
-    cublasLtMatrixLayoutDestroy(attn->V_layout);
-    cublasLtMatrixLayoutDestroy(attn->scores_layout);
-    cublasLtMatrixLayoutDestroy(attn->weights_layout);
-    cublasLtMatrixLayoutDestroy(attn->W_q_broadcast_layout);
-    cublasLtMatrixLayoutDestroy(attn->W_k_broadcast_layout);
-    cublasLtMatrixLayoutDestroy(attn->W_v_broadcast_layout);
-    cublasLtMatrixLayoutDestroy(attn->W_o_broadcast_layout);
-    cublasLtMatrixLayoutDestroy(attn->X_for_wgrad_layout);
-    cublasLtMatrixLayoutDestroy(attn->grad_QKV_for_wgrad_layout);
-    cublasLtMatrixLayoutDestroy(attn->attn_out_for_wgrad_layout);
-    cublasLtMatrixLayoutDestroy(attn->grad_out_for_wgrad_layout);
+    // Destroy consolidated layouts
+    cublasLtMatrixLayoutDestroy(attn->weight_layout);
+    cublasLtMatrixLayoutDestroy(attn->seq_batch_layout);
+    cublasLtMatrixLayoutDestroy(attn->attn_batch_layout);
+    cublasLtMatrixLayoutDestroy(attn->weight_broadcast_layout);
+    cublasLtMatrixLayoutDestroy(attn->flattened_seq_layout);
     
     // Free device memory
     cudaFree(attn->d_W_q); cudaFree(attn->d_W_k); cudaFree(attn->d_W_v); cudaFree(attn->d_W_o);
@@ -372,35 +315,35 @@ void forward_pass_attention(Attention* attn, float* d_X) {
     // Step 1: Compute Q, K, V using strided batched operations with broadcasted weights
     // Q = XW_q
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
-                                  attn->matmul_desc,
+                                  attn->matmul_NN_desc,
                                   &alpha,
-                                  d_X, attn->Q_layout,
-                                  attn->d_W_q, attn->W_q_broadcast_layout,
+                                  d_X, attn->seq_batch_layout,
+                                  attn->d_W_q, attn->weight_broadcast_layout,
                                   &beta,
-                                  attn->d_Q, attn->Q_layout,
-                                  attn->d_Q, attn->Q_layout,
+                                  attn->d_Q, attn->seq_batch_layout,
+                                  attn->d_Q, attn->seq_batch_layout,
                                   NULL, NULL, 0, 0));
     
     // K = XW_k
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
-                                  attn->matmul_desc,
+                                  attn->matmul_NN_desc,
                                   &alpha,
-                                  d_X, attn->K_layout,
-                                  attn->d_W_k, attn->W_k_broadcast_layout,
+                                  d_X, attn->seq_batch_layout,
+                                  attn->d_W_k, attn->weight_broadcast_layout,
                                   &beta,
-                                  attn->d_K, attn->K_layout,
-                                  attn->d_K, attn->K_layout,
+                                  attn->d_K, attn->seq_batch_layout,
+                                  attn->d_K, attn->seq_batch_layout,
                                   NULL, NULL, 0, 0));
     
     // V = XW_v
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
-                                  attn->matmul_desc,
+                                  attn->matmul_NN_desc,
                                   &alpha,
-                                  d_X, attn->V_layout,
-                                  attn->d_W_v, attn->W_v_broadcast_layout,
+                                  d_X, attn->seq_batch_layout,
+                                  attn->d_W_v, attn->weight_broadcast_layout,
                                   &beta,
-                                  attn->d_V, attn->V_layout,
-                                  attn->d_V, attn->V_layout,
+                                  attn->d_V, attn->seq_batch_layout,
+                                  attn->d_V, attn->seq_batch_layout,
                                   NULL, NULL, 0, 0));
     
     // Step 2: Compute attention scores
@@ -408,11 +351,11 @@ void forward_pass_attention(Attention* attn, float* d_X) {
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_NT_desc,
                                   &attn->scale,
-                                  attn->d_Q, attn->Q_layout,
-                                  attn->d_K, attn->K_layout,
+                                  attn->d_Q, attn->seq_batch_layout,
+                                  attn->d_K, attn->seq_batch_layout,
                                   &beta,
-                                  attn->d_scores, attn->scores_layout,
-                                  attn->d_scores, attn->scores_layout,
+                                  attn->d_scores, attn->attn_batch_layout,
+                                  attn->d_scores, attn->attn_batch_layout,
                                   NULL, NULL, 0, 0));
     
     // Step 3: Apply softmax
@@ -426,25 +369,25 @@ void forward_pass_attention(Attention* attn, float* d_X) {
     // Step 4: Compute attention output
     // Z = AV
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
-                                  attn->matmul_desc,
+                                  attn->matmul_NN_desc,
                                   &alpha,
-                                  attn->d_attn_weights, attn->weights_layout,
-                                  attn->d_V, attn->V_layout,
+                                  attn->d_attn_weights, attn->attn_batch_layout,
+                                  attn->d_V, attn->seq_batch_layout,
                                   &beta,
-                                  attn->d_attn_output, attn->Q_layout,
-                                  attn->d_attn_output, attn->Q_layout,
+                                  attn->d_attn_output, attn->seq_batch_layout,
+                                  attn->d_attn_output, attn->seq_batch_layout,
                                   NULL, NULL, 0, 0));
     
     // Step 5: Apply output projection
     // Y = ZW_o
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
-                                  attn->matmul_desc,
+                                  attn->matmul_NN_desc,
                                   &alpha,
-                                  attn->d_attn_output, attn->Q_layout,
-                                  attn->d_W_o, attn->W_o_broadcast_layout,
+                                  attn->d_attn_output, attn->seq_batch_layout,
+                                  attn->d_W_o, attn->weight_broadcast_layout,
                                   &beta,
-                                  attn->d_output, attn->Q_layout,
-                                  attn->d_output, attn->Q_layout,
+                                  attn->d_output, attn->seq_batch_layout,
+                                  attn->d_output, attn->seq_batch_layout,
                                   NULL, NULL, 0, 0));
 }
 
@@ -499,22 +442,22 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &alpha,
-                                  attn->d_attn_output, attn->attn_out_for_wgrad_layout,
-                                  attn->d_grad_output, attn->grad_out_for_wgrad_layout,
+                                  attn->d_attn_output, attn->flattened_seq_layout,
+                                  attn->d_grad_output, attn->flattened_seq_layout,
                                   &beta,
-                                  attn->d_W_o_grad, attn->W_grad_layout,
-                                  attn->d_W_o_grad, attn->W_grad_layout,
+                                  attn->d_W_o_grad, attn->weight_layout,
+                                  attn->d_W_o_grad, attn->weight_layout,
                                   NULL, NULL, 0, 0));
     
     // ∂L/∂Z = (∂L/∂Y)W_oᵀ
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_NT_desc,
                                   &alpha,
-                                  attn->d_grad_output, attn->Q_layout,
-                                  attn->d_W_o, attn->W_o_broadcast_layout,
+                                  attn->d_grad_output, attn->seq_batch_layout,
+                                  attn->d_W_o, attn->weight_broadcast_layout,
                                   &beta,
-                                  attn->d_grad_attn_output, attn->Q_layout,
-                                  attn->d_grad_attn_output, attn->Q_layout,
+                                  attn->d_grad_attn_output, attn->seq_batch_layout,
+                                  attn->d_grad_attn_output, attn->seq_batch_layout,
                                   NULL, NULL, 0, 0));
     
     // Step 4 (backward): Gradient through attention output computation
@@ -522,22 +465,22 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_NT_desc,
                                   &alpha,
-                                  attn->d_grad_attn_output, attn->Q_layout,
-                                  attn->d_V, attn->V_layout,
+                                  attn->d_grad_attn_output, attn->seq_batch_layout,
+                                  attn->d_V, attn->seq_batch_layout,
                                   &beta,
-                                  attn->d_grad_weights, attn->weights_layout,
-                                  attn->d_grad_weights, attn->weights_layout,
+                                  attn->d_grad_weights, attn->attn_batch_layout,
+                                  attn->d_grad_weights, attn->attn_batch_layout,
                                   NULL, NULL, 0, 0));
     
     // ∂L/∂V = Aᵀ(∂L/∂Z)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &alpha,
-                                  attn->d_attn_weights, attn->weights_layout,
-                                  attn->d_grad_attn_output, attn->Q_layout,
+                                  attn->d_attn_weights, attn->attn_batch_layout,
+                                  attn->d_grad_attn_output, attn->seq_batch_layout,
                                   &beta,
-                                  attn->d_grad_V, attn->V_layout,
-                                  attn->d_grad_V, attn->V_layout,
+                                  attn->d_grad_V, attn->seq_batch_layout,
+                                  attn->d_grad_V, attn->seq_batch_layout,
                                   NULL, NULL, 0, 0));
     
     // Step 3 (backward): Gradient through softmax
@@ -551,24 +494,24 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     // Step 2 (backward): Gradient through attention scores
     // ∂L/∂Q = (∂L/∂S)(K/√d_model)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
-                                  attn->matmul_desc,
+                                  attn->matmul_NN_desc,
                                   &attn->scale,
-                                  attn->d_grad_scores, attn->scores_layout,
-                                  attn->d_K, attn->K_layout,
+                                  attn->d_grad_scores, attn->attn_batch_layout,
+                                  attn->d_K, attn->seq_batch_layout,
                                   &beta,
-                                  attn->d_grad_Q, attn->Q_layout,
-                                  attn->d_grad_Q, attn->Q_layout,
+                                  attn->d_grad_Q, attn->seq_batch_layout,
+                                  attn->d_grad_Q, attn->seq_batch_layout,
                                   NULL, NULL, 0, 0));
     
     // ∂L/∂K = (∂L/∂S)ᵀ(Q/√d_model)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &attn->scale,
-                                  attn->d_grad_scores, attn->scores_layout,
-                                  attn->d_Q, attn->Q_layout,
+                                  attn->d_grad_scores, attn->attn_batch_layout,
+                                  attn->d_Q, attn->seq_batch_layout,
                                   &beta,
-                                  attn->d_grad_K, attn->K_layout,
-                                  attn->d_grad_K, attn->K_layout,
+                                  attn->d_grad_K, attn->seq_batch_layout,
+                                  attn->d_grad_K, attn->seq_batch_layout,
                                   NULL, NULL, 0, 0));
     
     // Step 1 (backward): Gradient through linear projections
@@ -576,33 +519,33 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &alpha,
-                                  d_X, attn->X_for_wgrad_layout,
-                                  attn->d_grad_Q, attn->grad_QKV_for_wgrad_layout,
+                                  d_X, attn->flattened_seq_layout,
+                                  attn->d_grad_Q, attn->flattened_seq_layout,
                                   &beta,
-                                  attn->d_W_q_grad, attn->W_grad_layout,
-                                  attn->d_W_q_grad, attn->W_grad_layout,
+                                  attn->d_W_q_grad, attn->weight_layout,
+                                  attn->d_W_q_grad, attn->weight_layout,
                                   NULL, NULL, 0, 0));
     
     // ∂L/∂W_k = Xᵀ(∂L/∂K)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &alpha,
-                                  d_X, attn->X_for_wgrad_layout,
-                                  attn->d_grad_K, attn->grad_QKV_for_wgrad_layout,
+                                  d_X, attn->flattened_seq_layout,
+                                  attn->d_grad_K, attn->flattened_seq_layout,
                                   &beta,
-                                  attn->d_W_k_grad, attn->W_grad_layout,
-                                  attn->d_W_k_grad, attn->W_grad_layout,
+                                  attn->d_W_k_grad, attn->weight_layout,
+                                  attn->d_W_k_grad, attn->weight_layout,
                                   NULL, NULL, 0, 0));
     
     // ∂L/∂W_v = Xᵀ(∂L/∂V)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &alpha,
-                                  d_X, attn->X_for_wgrad_layout,
-                                  attn->d_grad_V, attn->grad_QKV_for_wgrad_layout,
+                                  d_X, attn->flattened_seq_layout,
+                                  attn->d_grad_V, attn->flattened_seq_layout,
                                   &beta,
-                                  attn->d_W_v_grad, attn->W_grad_layout,
-                                  attn->d_W_v_grad, attn->W_grad_layout,
+                                  attn->d_W_v_grad, attn->weight_layout,
+                                  attn->d_W_v_grad, attn->weight_layout,
                                   NULL, NULL, 0, 0));
     
     // ∂L/∂X = (∂L/∂Q)W_qᵀ + (∂L/∂K)W_kᵀ + (∂L/∂V)W_vᵀ
@@ -611,33 +554,33 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
         CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                       attn->matmul_NT_desc,
                                       &alpha,
-                                      attn->d_grad_Q, attn->Q_layout,
-                                      attn->d_W_q, attn->W_q_broadcast_layout,
+                                      attn->d_grad_Q, attn->seq_batch_layout,
+                                      attn->d_W_q, attn->weight_broadcast_layout,
                                       &beta,
-                                      d_grad_X, attn->Q_layout,
-                                      d_grad_X, attn->Q_layout,
+                                      d_grad_X, attn->seq_batch_layout,
+                                      d_grad_X, attn->seq_batch_layout,
                                       NULL, NULL, 0, 0));
         
         // ∂L/∂X += (∂L/∂K)W_kᵀ
         CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                       attn->matmul_NT_desc,
                                       &alpha,
-                                      attn->d_grad_K, attn->K_layout,
-                                      attn->d_W_k, attn->W_k_broadcast_layout,
+                                      attn->d_grad_K, attn->seq_batch_layout,
+                                      attn->d_W_k, attn->weight_broadcast_layout,
                                       &alpha,
-                                      d_grad_X, attn->Q_layout,
-                                      d_grad_X, attn->Q_layout,
+                                      d_grad_X, attn->seq_batch_layout,
+                                      d_grad_X, attn->seq_batch_layout,
                                       NULL, NULL, 0, 0));
         
         // ∂L/∂X += (∂L/∂V)W_vᵀ
         CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                       attn->matmul_NT_desc,
                                       &alpha,
-                                      attn->d_grad_V, attn->V_layout,
-                                      attn->d_W_v, attn->W_v_broadcast_layout,
+                                      attn->d_grad_V, attn->seq_batch_layout,
+                                      attn->d_W_v, attn->weight_broadcast_layout,
                                       &alpha,
-                                      d_grad_X, attn->Q_layout,
-                                      d_grad_X, attn->Q_layout,
+                                      d_grad_X, attn->seq_batch_layout,
+                                      d_grad_X, attn->seq_batch_layout,
                                       NULL, NULL, 0, 0));
     }
 }
