@@ -1,7 +1,7 @@
 #include "attention.h"
 
 // Initialize the attention layer
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cublasLtHandle_t cublaslt_handle) {
+Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cublasLtHandle_t cublaslt_handle, Attention* predecessor) {
     Attention* attn = (Attention*)malloc(sizeof(Attention));
     
     // Store dimensions
@@ -10,6 +10,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     attn->batch_size = batch_size;
     attn->scale = 1.0f / sqrtf(d_model);
     attn->is_causal = is_causal;
+    attn->owns_grad_buffers = (predecessor == NULL);  // Only own buffers if no predecessor
     
     // Initialize Adam parameters
     attn->beta1 = 0.9f;
@@ -72,13 +73,25 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     CHECK_CUDA(cudaMalloc(&attn->d_output, seq_batch_size * sizeof(float)));
     
     // Allocate device memory for backward pass buffers
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_output, seq_batch_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_attn_output, seq_batch_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_weights, attn_matrix_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_scores, attn_matrix_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_Q, seq_batch_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_K, seq_batch_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_V, seq_batch_size * sizeof(float)));
+    if (predecessor != NULL) {
+        // Use predecessor's backward buffers
+        attn->d_grad_output = predecessor->d_grad_output;
+        attn->d_grad_attn_output = predecessor->d_grad_attn_output;
+        attn->d_grad_weights = predecessor->d_grad_weights;
+        attn->d_grad_scores = predecessor->d_grad_scores;
+        attn->d_grad_Q = predecessor->d_grad_Q;
+        attn->d_grad_K = predecessor->d_grad_K;
+        attn->d_grad_V = predecessor->d_grad_V;
+    } else {
+        // Allocate new backward pass buffers
+        CHECK_CUDA(cudaMalloc(&attn->d_grad_output, seq_batch_size * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&attn->d_grad_attn_output, seq_batch_size * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&attn->d_grad_weights, attn_matrix_size * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&attn->d_grad_scores, attn_matrix_size * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&attn->d_grad_Q, seq_batch_size * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&attn->d_grad_K, seq_batch_size * sizeof(float)));
+        CHECK_CUDA(cudaMalloc(&attn->d_grad_V, seq_batch_size * sizeof(float)));
+    }
     
     // Allocate single device float for loss computation
     CHECK_CUDA(cudaMalloc(&attn->d_loss_result, sizeof(float)));
@@ -176,8 +189,11 @@ void free_attention(Attention* attn) {
     cudaFree(attn->d_Q); cudaFree(attn->d_K); cudaFree(attn->d_V);
     cudaFree(attn->d_scores); cudaFree(attn->d_attn_weights);
     cudaFree(attn->d_attn_output); cudaFree(attn->d_output);
-    cudaFree(attn->d_grad_output); cudaFree(attn->d_grad_attn_output); cudaFree(attn->d_grad_weights);
-    cudaFree(attn->d_grad_scores); cudaFree(attn->d_grad_Q); cudaFree(attn->d_grad_K); cudaFree(attn->d_grad_V);
+    // Only free backward buffers if this instance owns them
+    if (attn->owns_grad_buffers) {
+        cudaFree(attn->d_grad_output); cudaFree(attn->d_grad_attn_output); cudaFree(attn->d_grad_weights);
+        cudaFree(attn->d_grad_scores); cudaFree(attn->d_grad_Q); cudaFree(attn->d_grad_K); cudaFree(attn->d_grad_V);
+    }
     
     // Free loss computation buffer
     cudaFree(attn->d_loss_result);
@@ -722,7 +738,7 @@ Attention* load_attention(const char* filename, int custom_batch_size, cublasLtH
     // Use custom_batch_size if provided, otherwise use stored value
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
-    Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, cublaslt_handle);
+    Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, cublaslt_handle, NULL);
     
     int weight_size = d_model * d_model;
     

@@ -1,7 +1,7 @@
 #include "attention.h"
 
 // Initialize the attention layer
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal) {
+Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, Attention* predecessor) {
     Attention* attn = (Attention*)malloc(sizeof(Attention));
     
     // Store dimensions
@@ -10,6 +10,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     attn->batch_size = batch_size;
     attn->scale = 1.0f / sqrtf(d_model);
     attn->is_causal = is_causal;
+    attn->owns_grad_buffers = (predecessor == NULL);  // Only own buffers if no predecessor
     
     // Initialize Adam parameters
     attn->beta1 = 0.9f;
@@ -53,13 +54,25 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     attn->output = (float*)malloc(seq_batch_size * sizeof(float));
     
     // Allocate backward pass buffers
-    attn->grad_output = (float*)malloc(seq_batch_size * sizeof(float));
-    attn->grad_attn_output = (float*)malloc(seq_batch_size * sizeof(float));
-    attn->grad_weights = (float*)malloc(attn_matrix_size * sizeof(float));
-    attn->grad_scores = (float*)malloc(attn_matrix_size * sizeof(float));
-    attn->grad_Q = (float*)malloc(seq_batch_size * sizeof(float));
-    attn->grad_K = (float*)malloc(seq_batch_size * sizeof(float));
-    attn->grad_V = (float*)malloc(seq_batch_size * sizeof(float));
+    if (predecessor != NULL) {
+        // Use predecessor's backward buffers
+        attn->grad_output = predecessor->grad_output;
+        attn->grad_attn_output = predecessor->grad_attn_output;
+        attn->grad_weights = predecessor->grad_weights;
+        attn->grad_scores = predecessor->grad_scores;
+        attn->grad_Q = predecessor->grad_Q;
+        attn->grad_K = predecessor->grad_K;
+        attn->grad_V = predecessor->grad_V;
+    } else {
+        // Allocate new backward pass buffers
+        attn->grad_output = (float*)malloc(seq_batch_size * sizeof(float));
+        attn->grad_attn_output = (float*)malloc(seq_batch_size * sizeof(float));
+        attn->grad_weights = (float*)malloc(attn_matrix_size * sizeof(float));
+        attn->grad_scores = (float*)malloc(attn_matrix_size * sizeof(float));
+        attn->grad_Q = (float*)malloc(seq_batch_size * sizeof(float));
+        attn->grad_K = (float*)malloc(seq_batch_size * sizeof(float));
+        attn->grad_V = (float*)malloc(seq_batch_size * sizeof(float));
+    }
     
     // Initialize weights
     float scale_W = 1.0f / sqrtf(d_model);
@@ -83,8 +96,11 @@ void free_attention(Attention* attn) {
     free(attn->Q); free(attn->K); free(attn->V);
     free(attn->scores); free(attn->attn_weights);
     free(attn->attn_output); free(attn->output);
-    free(attn->grad_output); free(attn->grad_attn_output); free(attn->grad_weights);
-    free(attn->grad_scores); free(attn->grad_Q); free(attn->grad_K); free(attn->grad_V);
+    // Only free backward buffers if this instance owns them
+    if (attn->owns_grad_buffers) {
+        free(attn->grad_output); free(attn->grad_attn_output); free(attn->grad_weights);
+        free(attn->grad_scores); free(attn->grad_Q); free(attn->grad_K); free(attn->grad_V);
+    }
     free(attn);
 }
 
@@ -537,7 +553,7 @@ Attention* load_attention(const char* filename, int custom_batch_size) {
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
     // Initialize attention layer
-    Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal);
+    Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, NULL);
     
     int weight_size = d_model * d_model;
     
