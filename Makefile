@@ -20,3 +20,12 @@ run: train.out
 clean:
 	rm -f *.out *.o *.csv *.bin
 	$(MAKE) -C gpu clean
+
+test_buffer_sharing.out: attention.o test_buffer_sharing.o
+	$(CC) attention.o test_buffer_sharing.o $(LDFLAGS) -o $@
+
+test_buffer_sharing.o: test_buffer_sharing.c attention.h
+	$(CC) $(CFLAGS) -c test_buffer_sharing.c -o $@
+
+test: test_buffer_sharing.out
+	./test_buffer_sharing.out
