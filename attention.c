@@ -251,7 +251,7 @@ void forward_pass_attention(Attention* attn, float* X) {
                     0.0f, scores_b, attn->seq_len);
     }
     
-    // Step 3: Apply softmax row-wise
+    // Step 3: Apply softmax
     if (attn->is_causal) {
         softmax_causal_forward_attention(attn->attn_weights, attn->scores, attn->batch_size, attn->seq_len);
     } else {
