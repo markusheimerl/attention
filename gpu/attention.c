@@ -186,7 +186,6 @@ void free_attention(Attention* attn) {
 }
 
 // CUDA kernel for softmax forward pass
-// A_ij = exp(S_ij)/∑_k exp(S_ik)
 __global__ static void softmax_forward_kernel_attention(float* weights, float* scores, int batch_size, int seq_len) {
     int b = blockIdx.x;
     int i = blockIdx.y;
@@ -253,7 +252,6 @@ __global__ static void softmax_causal_forward_kernel_attention(float* weights, f
 }
 
 // CUDA kernel for softmax backward pass
-// ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A)
 __global__ static void softmax_backward_kernel_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len) {
     int b = blockIdx.x;
     int i = blockIdx.y;
