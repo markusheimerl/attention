@@ -87,11 +87,11 @@ typedef struct {
     cublasLtMatmulDesc_t matmul_TN_desc; // A^T * B
     
     // Matrix layouts
-    cublasLtMatrixLayout_t weight_layout;           // [d_model x d_model] single matrix
+    cublasLtMatrixLayout_t weight_layout;           // [d_model x d_model]
     cublasLtMatrixLayout_t seq_batch_layout;        // [seq_len x d_model] batched
     cublasLtMatrixLayout_t attn_batch_layout;       // [seq_len x seq_len] batched  
-    cublasLtMatrixLayout_t weight_broadcast_layout; // [d_model x d_model] broadcast
-    cublasLtMatrixLayout_t flattened_seq_layout;    // [batch_size*seq_len x d_model] for weight gradients
+    cublasLtMatrixLayout_t weight_broadcast_layout; // [d_model x d_model] broadcasted
+    cublasLtMatrixLayout_t flattened_seq_layout;    // [batch_size*seq_len x d_model] flattened
     
     // Dimensions
     int seq_len;
