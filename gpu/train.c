@@ -15,6 +15,7 @@ int main() {
     // Parameters
     const int seq_len = 128;
     const int d_model = 64;
+    const int num_heads = 8;
     const int num_samples = 1024;
     const int batch_size = 32;
     
@@ -22,8 +23,8 @@ int main() {
     float *X, *y;
     generate_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
     
-    // Initialize attention layer
-    Attention* attn = init_attention(seq_len, d_model, batch_size, false, cublaslt_handle);
+    // Initialize multi-head attention layer
+    Attention* attn = init_attention(seq_len, d_model, num_heads, batch_size, false, cublaslt_handle);
     
     // Training parameters
     const int num_epochs = 50;
@@ -34,6 +35,9 @@ int main() {
     float *d_X, *d_y;
     CHECK_CUDA(cudaMalloc(&d_X, batch_size * seq_len * d_model * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&d_y, batch_size * seq_len * d_model * sizeof(float)));
+    
+    printf("Training multi-head attention with %d heads, d_model=%d, d_head=%d\n", 
+           num_heads, d_model, d_model / num_heads);
     
     // Training loop
     for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
