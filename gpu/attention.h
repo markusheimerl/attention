@@ -61,7 +61,7 @@ typedef struct {
     float* d_output;        // [batch_size * seq_len * d_model]
     float* d_grad_output;   // same shape
 
-    // Optional: grads wrt inputs (unused by caller but required by cudnn backward data)
+    // Gradients wrt inputs (returned by cudnnMultiHeadAttnBackwardData)
     float* d_dQ;            // [batch_size * seq_len * d_model]
     float* d_dK;            // [batch_size * seq_len * d_model]
     float* d_dV;            // [batch_size * seq_len * d_model]
@@ -84,7 +84,7 @@ typedef struct {
     int seq_len;
     int d_model;
     int batch_size;
-    int num_heads;          // we’ll use 1 head for simplicity
+    int num_heads;          // now configurable (set to 4 in train.c)
     bool is_causal;
 
     // AdamW hyperparameters and state
@@ -96,7 +96,7 @@ typedef struct {
 } Attention;
 
 // API
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cudnnHandle_t cudnn_handle);
+Attention* init_attention(int seq_len, int d_model, int batch_size, int num_heads, bool is_causal, cudnnHandle_t cudnn_handle);
 void free_attention(Attention* attn);
 
 void forward_pass_attention(Attention* attn, float* d_X);

@@ -17,13 +17,14 @@ int main() {
     const int d_model = 64;
     const int num_samples = 1024;
     const int batch_size = 32;
+    const int num_heads = 4; // requested
 
     // Generate synthetic data
     float *X, *y;
     generate_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
 
-    // Initialize attention layer
-    Attention* attn = init_attention(seq_len, d_model, batch_size, false, cudnn_handle);
+    // Initialize attention layer (4 heads)
+    Attention* attn = init_attention(seq_len, d_model, batch_size, num_heads, false, cudnn_handle);
 
     // Training parameters
     const int num_epochs = 50;
@@ -31,9 +32,11 @@ int main() {
     const int num_batches = num_samples / batch_size;
 
     // Allocate device memory for batch data
-    float *d_X, *d_y;
-    CHECK_CUDA(cudaMalloc(&d_X, (size_t)batch_size * seq_len * d_model * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_y, (size_t)batch_size * seq_len * d_model * sizeof(float)));
+    size_t batch_bytes = (size_t)batch_size * seq_len * d_model * sizeof(float);
+    float *d_X, *d_y, *d_grad_X;
+    CHECK_CUDA(cudaMalloc(&d_X, batch_bytes));
+    CHECK_CUDA(cudaMalloc(&d_y, batch_bytes));
+    CHECK_CUDA(cudaMalloc(&d_grad_X, batch_bytes)); // to receive dX for chaining to previous layer
 
     // Training loop
     for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
@@ -44,8 +47,8 @@ int main() {
             size_t offset = (size_t)batch * batch_size * seq_len * d_model;
 
             // Copy batch data to device
-            CHECK_CUDA(cudaMemcpy(d_X, &X[offset], (size_t)batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
-            CHECK_CUDA(cudaMemcpy(d_y, &y[offset], (size_t)batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
+            CHECK_CUDA(cudaMemcpy(d_X, &X[offset], batch_bytes, cudaMemcpyHostToDevice));
+            CHECK_CUDA(cudaMemcpy(d_y, &y[offset], batch_bytes, cudaMemcpyHostToDevice));
 
             // Forward pass (Q=K=V=X)
             forward_pass_attention(attn, d_X);
@@ -57,9 +60,9 @@ int main() {
             // Don't update weights after final evaluation
             if (epoch == num_epochs) continue;
 
-            // Backward pass
+            // Backward pass: request gradient wrt inputs into d_grad_X
             zero_gradients_attention(attn);
-            backward_pass_attention(attn, d_X, NULL);
+            backward_pass_attention(attn, d_X, d_grad_X);
 
             // Update weights
             update_weights_attention(attn, learning_rate);
@@ -86,16 +89,16 @@ int main() {
     // Load the model back and verify
     printf("\nVerifying saved model...\n");
 
-    // Load the model back with original batch_size
+    // Load the model back with original batch_size (keeps num_heads from file)
     Attention* loaded_attn = load_attention(model_fname, batch_size, cudnn_handle);
 
     // Forward pass with loaded model on first batch
-    CHECK_CUDA(cudaMemcpy(d_X, X, (size_t)batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_X, X, batch_bytes, cudaMemcpyHostToDevice));
     forward_pass_attention(loaded_attn, d_X);
 
     // Copy predictions back to host
-    float* output = (float*)malloc((size_t)batch_size * seq_len * d_model * sizeof(float));
-    CHECK_CUDA(cudaMemcpy(output, loaded_attn->d_output, (size_t)batch_size * seq_len * d_model * sizeof(float), cudaMemcpyDeviceToHost));
+    float* output = (float*)malloc(batch_bytes);
+    CHECK_CUDA(cudaMemcpy(output, loaded_attn->d_output, batch_bytes, cudaMemcpyDeviceToHost));
 
     // Evaluate model performance on first batch
     printf("Feature\tR²\t\tMAE\t\tSample Predictions\n");
@@ -149,6 +152,7 @@ int main() {
     free(output);
     CHECK_CUDA(cudaFree(d_X));
     CHECK_CUDA(cudaFree(d_y));
+    CHECK_CUDA(cudaFree(d_grad_X));
     free_attention(attn);
     free_attention(loaded_attn);
     CHECK_CUDNN(cudnnDestroy(cudnn_handle));

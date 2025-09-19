@@ -11,7 +11,13 @@ __global__ static void compute_loss_and_gradient_kernel_attention(float* grad_ou
     }
 }
 
-// CUDA kernel for AdamW update on a flat weights buffer
+// Sum kernel: out = a + b + c
+__global__ static void sum3_kernel(const float* a, const float* b, const float* c, float* out, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = a[i] + b[i] + c[i];
+}
+
+// AdamW update on a flat weights buffer
 __global__ static void adamw_update_flat_kernel(float* weights, const float* grads, float* m, float* v,
                                                 float beta1, float beta2, float epsilon, float lr,
                                                 float weight_decay, float alpha_t, int n, int batch_size) {
@@ -50,13 +56,20 @@ static void set_seqdesc_BTnV(cudnnSeqDataDescriptor_t desc, int batch_size, int 
 }
 
 // Initialize the attention layer
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cudnnHandle_t cudnn_handle) {
+Attention* init_attention(int seq_len, int d_model, int batch_size, int num_heads, bool is_causal, cudnnHandle_t cudnn_handle) {
     Attention* attn = (Attention*)calloc(1, sizeof(Attention));
     attn->seq_len = seq_len;
     attn->d_model = d_model;
     attn->batch_size = batch_size;
-    attn->num_heads = 4; // simple single-head config
+    attn->num_heads = num_heads;
     attn->is_causal = is_causal;
+
+    // Validate heads
+    if (attn->num_heads <= 0 || (attn->d_model % attn->num_heads) != 0) {
+        fprintf(stderr, "Error: d_model (%d) must be divisible by num_heads (%d)\n", attn->d_model, attn->num_heads);
+        exit(EXIT_FAILURE);
+    }
+    int head_dim = attn->d_model / attn->num_heads;
 
     // AdamW defaults
     attn->beta1 = 0.9f;
@@ -82,16 +95,16 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     CHECK_CUDNN(cudnnSetDropoutDescriptor(attn->drop_desc, attn->cudnn_handle, 0.0f, attn->d_dropout_states, dropout_state_size, 0));
 
     // Set attention descriptor
-    // Use full projections inside cuDNN. With 1 head, per-head proj sizes equal d_model.
+    // Use full projections inside cuDNN. Per-head proj sizes are head_dim; output size is d_model.
     int qSize = d_model, kSize = d_model, vSize = d_model;
-    int qProjSize = d_model, kProjSize = d_model, vProjSize = d_model, oProjSize = d_model;
+    int qProjSize = head_dim, kProjSize = head_dim, vProjSize = head_dim, oProjSize = d_model;
     int qoMaxSeqLength = seq_len, kvMaxSeqLength = seq_len;
     int maxBatchSize = batch_size, maxBeamSize = 1;
 
     CHECK_CUDNN(cudnnSetAttnDescriptor(attn->attn_desc,
                                        CUDNN_ATTN_QUERYMAP_ONE_TO_ONE,
                                        attn->num_heads,
-                                       1.0 / sqrt((double)d_model),
+                                       1.0 / sqrt((double)head_dim), // softmax scale based on head_dim
                                        CUDNN_DATA_FLOAT,
                                        CUDNN_DATA_FLOAT,
                                        CUDNN_DEFAULT_MATH,
@@ -113,7 +126,6 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
         CHECK_CUDA(cudaMalloc(&attn->d_weights, attn->weight_size));
         CHECK_CUDA(cudaMalloc(&attn->d_wgrad,  attn->weight_size));
         // Adam moments
-        int n = (int)(attn->weight_size / sizeof(float));
         CHECK_CUDA(cudaMalloc(&attn->d_m, attn->weight_size));
         CHECK_CUDA(cudaMalloc(&attn->d_v, attn->weight_size));
         CHECK_CUDA(cudaMemset(attn->d_m, 0, attn->weight_size));
@@ -121,7 +133,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
 
         // Initialize weights
         float* hW = (float*)malloc(attn->weight_size);
-        float scale = 1.0f / sqrtf((float)d_model);
+        float scale = 1.0f / sqrtf((float)attn->d_model);
         for (size_t i = 0; i < attn->weight_size / sizeof(float); i++) {
             hW[i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale;
         }
@@ -181,8 +193,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     }
 
     // Set SeqData descriptors to match memory layout X: [batch, time, vect] contiguous with last-dim fastest
-    // We choose axes order [BATCH, TIME, BEAM, VECT] and dims accordingly.
-    // For Q and O, seqLength array size is batch_size (beam=1). For K and V, also batch_size (self-attention).
+    // We choose axes order [BATCH, TIME, BEAM, VECT] and dims accordingly (beam=1).
     set_seqdesc_BTnV(attn->q_desc, batch_size, seq_len, 1, d_model, h_seq_qo, (size_t)batch_size);
     set_seqdesc_BTnV(attn->o_desc, batch_size, seq_len, 1, d_model, h_seq_qo, (size_t)batch_size);
     set_seqdesc_BTnV(attn->k_desc, batch_size, seq_len, 1, d_model, h_seq_kv, (size_t)batch_size);
@@ -268,9 +279,9 @@ void zero_gradients_attention(Attention* attn) {
     }
 }
 
-// Backward pass: compute wgrad via cuDNN; dX is optional (not needed by caller)
-void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X_unused) {
-    // Backward Data (to compute dQ/dK/dV; not used by caller, but may be required by cudnn for wgrad)
+// Backward pass: compute dQ/dK/dV (wrt inputs) and d(weights). If d_grad_X != NULL, write d_grad_X = dQ + dK + dV.
+void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
+    // Backward Data (compute dQ/dK/dV wrt the original inputs)
     CHECK_CUDNN(cudnnMultiHeadAttnBackwardData(attn->cudnn_handle,
                                                attn->attn_desc,
                                                attn->lo_win_idx,
@@ -284,6 +295,14 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X_unused
                                                attn->weight_size, attn->d_weights,
                                                attn->workspace_size, attn->d_workspace,
                                                attn->reserve_size, attn->d_reserve_space));
+
+    // If requested, add up gradients wrt inputs. For self-attention (Q=K=V=X), dX = dQ + dK + dV.
+    if (d_grad_X) {
+        int n = attn->batch_size * attn->seq_len * attn->d_model;
+        int block = 256;
+        int grid = (n + block - 1) / block;
+        sum3_kernel<<<grid, block>>>(attn->d_dQ, attn->d_dK, attn->d_dV, d_grad_X, n);
+    }
 
     // Backward Weights (compute d(weights))
     CHECK_CUDNN(cudnnMultiHeadAttnBackwardWeights(attn->cudnn_handle,
@@ -363,7 +382,7 @@ Attention* load_attention(const char* filename, int custom_batch_size, cudnnHand
 
     int batch_size = custom_batch_size > 0 ? custom_batch_size : stored_batch_size;
 
-    Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, cudnn_handle);
+    Attention* attn = init_attention(seq_len, d_model, batch_size, num_heads, is_causal, cudnn_handle);
 
     size_t weight_size_file = 0;
     fread(&weight_size_file, sizeof(size_t), 1, f);
