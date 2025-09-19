@@ -6,8 +6,8 @@
 #include <string.h>
 #include <math.h>
 #include <stdbool.h>
-#include <cublasLt.h>
 #include <cuda_runtime.h>
+#include <cudnn.h>
 
 // CUDA Error checking macro
 #ifndef CHECK_CUDA
@@ -21,95 +21,92 @@
 } while(0)
 #endif
 
-// cuBLASLt Error checking macro
-#ifndef CHECK_CUBLASLT
-#define CHECK_CUBLASLT(call) do { \
-    cublasStatus_t status = call; \
-    if (status != CUBLAS_STATUS_SUCCESS) { \
-        fprintf(stderr, "cuBLASLt error in %s:%d: %d\n", __FILE__, __LINE__, \
-                (int)status); \
+// cuDNN Error checking macro
+#ifndef CHECK_CUDNN
+#define CHECK_CUDNN(call) do { \
+    cudnnStatus_t status = call; \
+    if (status != CUDNN_STATUS_SUCCESS) { \
+        fprintf(stderr, "cuDNN error in %s:%d: %s\n", __FILE__, __LINE__, \
+                cudnnGetErrorString(status)); \
         exit(EXIT_FAILURE); \
     } \
 } while(0)
 #endif
 
 typedef struct {
-    // Device weights for attention mechanism
-    float* d_W_q;      // Query projection [d_model x d_model]
-    float* d_W_k;      // Key projection [d_model x d_model]
-    float* d_W_v;      // Value projection [d_model x d_model]
-    float* d_W_o;      // Output projection [d_model x d_model]
-    
-    // Device gradients
-    float* d_W_q_grad; // [d_model x d_model]
-    float* d_W_k_grad; // [d_model x d_model]
-    float* d_W_v_grad; // [d_model x d_model]
-    float* d_W_o_grad; // [d_model x d_model]
-    
-    // Adam parameters
-    float* d_W_q_m, *d_W_q_v; // First and second moments for W_q
-    float* d_W_k_m, *d_W_k_v; // First and second moments for W_k
-    float* d_W_v_m, *d_W_v_v; // First and second moments for W_v
-    float* d_W_o_m, *d_W_o_v; // First and second moments for W_o
-    float beta1;               // Exponential decay rate for first moment
-    float beta2;               // Exponential decay rate for second moment
-    float epsilon;             // Small constant for numerical stability
-    int t;                     // Time step
-    float weight_decay;        // Weight decay parameter for AdamW
-    
-    // Forward pass buffers
-    float* d_Q;            // Query matrix [batch_size x seq_len x d_model]
-    float* d_K;            // Key matrix [batch_size x seq_len x d_model]
-    float* d_V;            // Value matrix [batch_size x seq_len x d_model]
-    float* d_scores;       // Attention scores [batch_size x seq_len x seq_len]
-    float* d_attn_weights; // Attention weights [batch_size x seq_len x seq_len]
-    float* d_attn_output;  // Attention output [batch_size x seq_len x d_model]
-    float* d_output;       // Final output [batch_size x seq_len x d_model]
-    
-    // Backward pass buffers
-    float* d_grad_output;      // [batch_size x seq_len x d_model]
-    float* d_grad_attn_output; // [batch_size x seq_len x d_model]
-    float* d_grad_weights;     // [batch_size x seq_len x seq_len]
-    float* d_grad_scores;      // [batch_size x seq_len x seq_len]
-    float* d_grad_Q;           // [batch_size x seq_len x d_model]
-    float* d_grad_K;           // [batch_size x seq_len x d_model]
-    float* d_grad_V;           // [batch_size x seq_len x d_model]
+    // cuDNN handle
+    cudnnHandle_t cudnn_handle;
 
-    // Loss computation buffer
-    float* d_loss_result;      // [1]
+    // cuDNN attention and descriptors
+    cudnnAttnDescriptor_t attn_desc;
+    cudnnDropoutDescriptor_t drop_desc;
+    cudnnSeqDataDescriptor_t q_desc, k_desc, v_desc, o_desc;
 
-    // cuBLASLt handle
-    cublasLtHandle_t cublaslt_handle;
-    
-    // cuBLASLt descriptors
-    cublasLtMatmulDesc_t matmul_NN_desc; // A * B
-    cublasLtMatmulDesc_t matmul_NT_desc; // A * B^T
-    cublasLtMatmulDesc_t matmul_TN_desc; // A^T * B
-    
-    // Matrix layouts
-    cublasLtMatrixLayout_t weight_layout;           // [d_model x d_model]
-    cublasLtMatrixLayout_t seq_batch_layout;        // [seq_len x d_model] batched
-    cublasLtMatrixLayout_t attn_batch_layout;       // [seq_len x seq_len] batched  
-    cublasLtMatrixLayout_t weight_broadcast_layout; // [d_model x d_model] broadcasted
-    cublasLtMatrixLayout_t flattened_seq_layout;    // [batch_size*seq_len x d_model] flattened
-    
+    // Workspace and reserve space
+    void* d_workspace;
+    void* d_reserve_space;
+    size_t workspace_size;
+    size_t reserve_size;
+
+    // Weights buffer and gradients (single contiguous buffer managed by cuDNN)
+    void* d_weights;     // float buffer
+    void* d_wgrad;       // float buffer (same size as d_weights)
+    size_t weight_size;  // in bytes
+
+    // AdamW moment buffers for weights (float arrays length weight_size/sizeof(float))
+    float* d_m;
+    float* d_v;
+
+    // Forward output and gradient wrt output
+    float* d_output;        // [batch_size * seq_len * d_model]
+    float* d_grad_output;   // same shape
+
+    // Optional: grads wrt inputs (unused by caller but required by cudnn backward data)
+    float* d_dQ;            // [batch_size * seq_len * d_model]
+    float* d_dK;            // [batch_size * seq_len * d_model]
+    float* d_dV;            // [batch_size * seq_len * d_model]
+
+    // Device arrays for sequence lengths
+    int* d_seq_lengths_qo;  // length batch_size*beam (beam=1)
+    int* d_seq_lengths_kv;  // length batch_size
+
+    // Host attention window indices
+    int* lo_win_idx;        // length seq_len
+    int* hi_win_idx;        // length seq_len
+
+    // Dropout state storage
+    void* d_dropout_states;
+
+    // Loss accumulation
+    float* d_loss_result;   // single float
+
     // Dimensions
     int seq_len;
     int d_model;
     int batch_size;
-    float scale;
+    int num_heads;          // we’ll use 1 head for simplicity
     bool is_causal;
+
+    // AdamW hyperparameters and state
+    float beta1;
+    float beta2;
+    float epsilon;
+    float weight_decay;
+    int t;                  // time step
 } Attention;
 
-// Function prototypes
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cublasLtHandle_t cublaslt_handle);
+// API
+Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cudnnHandle_t cudnn_handle);
 void free_attention(Attention* attn);
+
 void forward_pass_attention(Attention* attn, float* d_X);
 float calculate_loss_attention(Attention* attn, float* d_y);
+
 void zero_gradients_attention(Attention* attn);
 void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X);
 void update_weights_attention(Attention* attn, float learning_rate);
+
 void save_attention(Attention* attn, const char* filename);
-Attention* load_attention(const char* filename, int custom_batch_size, cublasLtHandle_t cublaslt_handle);
+Attention* load_attention(const char* filename, int custom_batch_size, cudnnHandle_t cudnn_handle);
 
 #endif

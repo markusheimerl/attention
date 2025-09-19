@@ -8,48 +8,48 @@
 int main() {
     srand(time(NULL));
 
-    // Initialize cuBLASLt
-    cublasLtHandle_t cublaslt_handle;
-    CHECK_CUBLASLT(cublasLtCreate(&cublaslt_handle));
+    // Initialize cuDNN
+    cudnnHandle_t cudnn_handle;
+    CHECK_CUDNN(cudnnCreate(&cudnn_handle));
 
     // Parameters
     const int seq_len = 128;
     const int d_model = 64;
     const int num_samples = 1024;
     const int batch_size = 32;
-    
+
     // Generate synthetic data
     float *X, *y;
     generate_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
-    
+
     // Initialize attention layer
-    Attention* attn = init_attention(seq_len, d_model, batch_size, false, cublaslt_handle);
-    
+    Attention* attn = init_attention(seq_len, d_model, batch_size, false, cudnn_handle);
+
     // Training parameters
     const int num_epochs = 50;
     const float learning_rate = 0.001f;
     const int num_batches = num_samples / batch_size;
-    
+
     // Allocate device memory for batch data
     float *d_X, *d_y;
-    CHECK_CUDA(cudaMalloc(&d_X, batch_size * seq_len * d_model * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_y, batch_size * seq_len * d_model * sizeof(float)));
-    
+    CHECK_CUDA(cudaMalloc(&d_X, (size_t)batch_size * seq_len * d_model * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&d_y, (size_t)batch_size * seq_len * d_model * sizeof(float)));
+
     // Training loop
     for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
         float epoch_loss = 0.0f;
-        
+
         for (int batch = 0; batch < num_batches; batch++) {
             // Calculate batch offset
-            int batch_offset = batch * batch_size * seq_len * d_model;
+            size_t offset = (size_t)batch * batch_size * seq_len * d_model;
 
             // Copy batch data to device
-            CHECK_CUDA(cudaMemcpy(d_X, &X[batch_offset], batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
-            CHECK_CUDA(cudaMemcpy(d_y, &y[batch_offset], batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
-            
-            // Forward pass
+            CHECK_CUDA(cudaMemcpy(d_X, &X[offset], (size_t)batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
+            CHECK_CUDA(cudaMemcpy(d_y, &y[offset], (size_t)batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
+
+            // Forward pass (Q=K=V=X)
             forward_pass_attention(attn, d_X);
-            
+
             // Calculate loss
             float loss = calculate_loss_attention(attn, d_y);
             epoch_loss += loss;
@@ -60,11 +60,11 @@ int main() {
             // Backward pass
             zero_gradients_attention(attn);
             backward_pass_attention(attn, d_X, NULL);
-            
+
             // Update weights
             update_weights_attention(attn, learning_rate);
         }
-        
+
         epoch_loss /= num_batches;
 
         // Print progress
@@ -82,20 +82,20 @@ int main() {
     // Save model and data with timestamped filenames
     save_attention(attn, model_fname);
     save_data(X, y, seq_len, num_samples, d_model, data_fname);
-    
+
     // Load the model back and verify
     printf("\nVerifying saved model...\n");
 
     // Load the model back with original batch_size
-    Attention* loaded_attn = load_attention(model_fname, batch_size, cublaslt_handle);
+    Attention* loaded_attn = load_attention(model_fname, batch_size, cudnn_handle);
 
     // Forward pass with loaded model on first batch
-    CHECK_CUDA(cudaMemcpy(d_X, X, batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_X, X, (size_t)batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
     forward_pass_attention(loaded_attn, d_X);
-    
+
     // Copy predictions back to host
-    float* output = (float*)malloc(batch_size * seq_len * d_model * sizeof(float));
-    CHECK_CUDA(cudaMemcpy(output, loaded_attn->d_output, batch_size * seq_len * d_model * sizeof(float), cudaMemcpyDeviceToHost));
+    float* output = (float*)malloc((size_t)batch_size * seq_len * d_model * sizeof(float));
+    CHECK_CUDA(cudaMemcpy(output, loaded_attn->d_output, (size_t)batch_size * seq_len * d_model * sizeof(float), cudaMemcpyDeviceToHost));
 
     // Evaluate model performance on first batch
     printf("Feature\tR²\t\tMAE\t\tSample Predictions\n");
@@ -105,7 +105,7 @@ int main() {
         // Calculate mean for R² across all positions and batches for this feature
         float y_mean = 0.0f;
         int total_elements = batch_size * seq_len;
-        
+
         for (int b = 0; b < batch_size; b++) {
             for (int t = 0; t < seq_len; t++) {
                 int idx = b * seq_len * d_model + t * d_model + d;
@@ -113,7 +113,7 @@ int main() {
             }
         }
         y_mean /= total_elements;
-        
+
         // Calculate R² and MAE for this feature
         float ss_res = 0.0f, ss_tot = 0.0f, mae = 0.0f;
         for (int b = 0; b < batch_size; b++) {
@@ -122,20 +122,19 @@ int main() {
                 float pred = output[idx];
                 float actual = y[idx];
                 float diff = pred - actual;
-                
+
                 ss_res += diff * diff;
                 ss_tot += (actual - y_mean) * (actual - y_mean);
-                mae += fabs(diff);
+                mae += fabsf(diff);
             }
         }
-        
+
         float r2 = 1.0f - (ss_res / ss_tot);
         mae /= total_elements;
-        
+
         // Print summary with sample predictions from first batch, first few positions
         printf("d%d\t%.6f\t%.3f\t\t", d, r2, mae);
         for (int sample = 0; sample < 3; sample++) {
-            // Show predictions from batch 0, positions 0, 1, 2
             int idx = 0 * seq_len * d_model + sample * d_model + d;
             float pred = output[idx];
             float actual = y[idx];
@@ -143,7 +142,7 @@ int main() {
         }
         printf("\n");
     }
-    
+
     // Cleanup
     free(X);
     free(y);
@@ -152,7 +151,7 @@ int main() {
     CHECK_CUDA(cudaFree(d_y));
     free_attention(attn);
     free_attention(loaded_attn);
-    CHECK_CUBLASLT(cublasLtDestroy(cublaslt_handle));
-    
+    CHECK_CUDNN(cudnnDestroy(cudnn_handle));
+
     return 0;
 }
