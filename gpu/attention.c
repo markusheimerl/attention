@@ -119,7 +119,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     cublasLtOrder_t order = CUBLASLT_ORDER_ROW;
     
     // Create matrix layout descriptors
-    // 1. Weight matrices [d_model x d_model] - single matrix
+    // 1. Weight matrices [d_model x d_model]
     CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->weight_layout, CUDA_R_32F, d_model, d_model, d_model));
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weight_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
     
@@ -137,14 +137,14 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->attn_batch_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->attn_batch_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &attn_batch_stride, sizeof(attn_batch_stride)));
     
-    // 4. Weight matrices [d_model x d_model] - broadcast
+    // 4. Weight matrices [d_model x d_model] - broadcasted
     int64_t zero_stride = 0;
     CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->weight_broadcast_layout, CUDA_R_32F, d_model, d_model, d_model));
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weight_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weight_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weight_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &zero_stride, sizeof(zero_stride)));
     
-    // 5. Flattened sequence data [batch_size*seq_len x d_model] - for weight gradients
+    // 5. Sequence data [batch_size*seq_len x d_model] - flattened
     CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->flattened_seq_layout, CUDA_R_32F, batch_size * seq_len, d_model, d_model));
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->flattened_seq_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
     
