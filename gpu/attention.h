@@ -61,19 +61,13 @@ typedef struct {
     float* d_Q;            // Query matrix [batch_size x seq_len x d_model]
     float* d_K;            // Key matrix [batch_size x seq_len x d_model]
     float* d_V;            // Value matrix [batch_size x seq_len x d_model]
-    float* d_scores;       // Attention scores [batch_size x seq_len x seq_len]
     float* d_attn_weights; // Attention weights [batch_size x seq_len x seq_len]
     float* d_attn_output;  // Attention output [batch_size x seq_len x d_model]
     float* d_output;       // Final output [batch_size x seq_len x d_model]
     
-    // Backward pass buffers
-    float* d_grad_output;      // [batch_size x seq_len x d_model]
-    float* d_grad_attn_output; // [batch_size x seq_len x d_model]
-    float* d_grad_weights;     // [batch_size x seq_len x seq_len]
-    float* d_grad_scores;      // [batch_size x seq_len x seq_len]
-    float* d_grad_Q;           // [batch_size x seq_len x d_model]
-    float* d_grad_K;           // [batch_size x seq_len x d_model]
-    float* d_grad_V;           // [batch_size x seq_len x d_model]
+    // Reusable buffers for sequential operations
+    float* d_seq_len_buffer;   // [batch_size x seq_len x seq_len]
+    float* d_seq_model_buffer; // [batch_size x seq_len x d_model]
 
     // Loss computation buffer
     float* d_loss_result;      // [1]
@@ -87,11 +81,11 @@ typedef struct {
     cublasLtMatmulDesc_t matmul_TN_desc; // A^T * B
     
     // Matrix layouts
-    cublasLtMatrixLayout_t weight_layout;           // [d_model x d_model]
+    cublasLtMatrixLayout_t weight_layout;           // [d_model x d_model] single matrix
     cublasLtMatrixLayout_t seq_batch_layout;        // [seq_len x d_model] batched
     cublasLtMatrixLayout_t attn_batch_layout;       // [seq_len x seq_len] batched  
-    cublasLtMatrixLayout_t weight_broadcast_layout; // [d_model x d_model] broadcasted
-    cublasLtMatrixLayout_t flattened_seq_layout;    // [batch_size*seq_len x d_model] flattened
+    cublasLtMatrixLayout_t weight_broadcast_layout; // [d_model x d_model] broadcast
+    cublasLtMatrixLayout_t flattened_seq_layout;    // [batch_size*seq_len x d_model] for weight gradients
     
     // Dimensions
     int seq_len;
