@@ -1,37 +1,5 @@
 #include "attention.h"
 
-// CUDA kernel for reshaping [batch, seq, d_model] -> [batch, num_heads, seq, d_head]
-__global__ static void reshape_for_heads_kernel(float* output, float* input, 
-                                               int batch_size, int seq_len, int num_heads, int d_head) {
-    int b = blockIdx.x;
-    int h = blockIdx.y;
-    int s = blockIdx.z;
-    int d = threadIdx.x;
-    
-    if (b >= batch_size || h >= num_heads || s >= seq_len || d >= d_head) return;
-    
-    int input_idx = b * seq_len * num_heads * d_head + s * num_heads * d_head + h * d_head + d;
-    int output_idx = b * num_heads * seq_len * d_head + h * seq_len * d_head + s * d_head + d;
-    
-    output[output_idx] = input[input_idx];
-}
-
-// CUDA kernel for reshaping [batch, num_heads, seq, d_head] -> [batch, seq, d_model]
-__global__ static void reshape_from_heads_kernel(float* output, float* input, 
-                                                int batch_size, int seq_len, int num_heads, int d_head) {
-    int b = blockIdx.x;
-    int h = blockIdx.y;
-    int s = blockIdx.z;
-    int d = threadIdx.x;
-    
-    if (b >= batch_size || h >= num_heads || s >= seq_len || d >= d_head) return;
-    
-    int input_idx = b * num_heads * seq_len * d_head + h * seq_len * d_head + s * d_head + d;
-    int output_idx = b * seq_len * num_heads * d_head + s * num_heads * d_head + h * d_head + d;
-    
-    output[output_idx] = input[input_idx];
-}
-
 // Initialize the attention layer
 Attention* init_attention(int seq_len, int d_model, int num_heads, int batch_size, bool is_causal, cublasLtHandle_t cublaslt_handle) {
     Attention* attn = (Attention*)malloc(sizeof(Attention));
@@ -57,7 +25,6 @@ Attention* init_attention(int seq_len, int d_model, int num_heads, int batch_siz
     
     int weight_size = d_model * d_model;
     int seq_batch_size = batch_size * seq_len * d_model;
-    int head_seq_size = batch_size * num_heads * seq_len * attn->d_head;
     int head_attn_size = batch_size * num_heads * seq_len * seq_len;
     
     // Allocate host memory for weight initialization
@@ -101,24 +68,16 @@ Attention* init_attention(int seq_len, int d_model, int num_heads, int batch_siz
     CHECK_CUDA(cudaMalloc(&attn->d_Q, seq_batch_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_K, seq_batch_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_V, seq_batch_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_Q_reshaped, head_seq_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_K_reshaped, head_seq_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_V_reshaped, head_seq_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_scores, head_attn_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_attn_weights, head_attn_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_attn_output, head_seq_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_concat_output, seq_batch_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_output, seq_batch_size * sizeof(float)));
     
     // Allocate device memory for backward pass buffers
     CHECK_CUDA(cudaMalloc(&attn->d_grad_output, seq_batch_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_grad_concat_output, seq_batch_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_attn_output, head_seq_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_grad_weights, head_attn_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_grad_scores, head_attn_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_Q_reshaped, head_seq_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_K_reshaped, head_seq_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_V_reshaped, head_seq_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_grad_Q, seq_batch_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_grad_K, seq_batch_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_grad_V, seq_batch_size * sizeof(float)));
@@ -173,31 +132,29 @@ Attention* init_attention(int seq_len, int d_model, int num_heads, int batch_siz
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->seq_batch_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->seq_batch_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &seq_batch_stride, sizeof(seq_batch_stride)));
     
-    // 3. Head sequence data [seq_len x d_head] - batched per head
-    int total_head_batches = batch_size * num_heads;
-    int64_t head_seq_stride = seq_len * attn->d_head;
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->head_seq_layout, CUDA_R_32F, seq_len, attn->d_head, attn->d_head));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->head_seq_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->head_seq_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &total_head_batches, sizeof(total_head_batches)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->head_seq_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &head_seq_stride, sizeof(head_seq_stride)));
-    
-    // 4. Head attention matrices [seq_len x seq_len] - batched per head
-    int64_t head_attn_stride = seq_len * seq_len;
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->head_attn_layout, CUDA_R_32F, seq_len, seq_len, seq_len));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->head_attn_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->head_attn_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &total_head_batches, sizeof(total_head_batches)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->head_attn_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &head_attn_stride, sizeof(head_attn_stride)));
-    
-    // 5. Weight matrices [d_model x d_model] - broadcasted
+    // 3. Weight matrices [d_model x d_model] - broadcasted
     int64_t zero_stride = 0;
     CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->weight_broadcast_layout, CUDA_R_32F, d_model, d_model, d_model));
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weight_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weight_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->weight_broadcast_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &zero_stride, sizeof(zero_stride)));
     
-    // 6. Sequence data [batch_size*seq_len x d_model] - flattened
+    // 4. Sequence data [batch_size*seq_len x d_model] - flattened
     CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->flattened_seq_layout, CUDA_R_32F, batch_size * seq_len, d_model, d_model));
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->flattened_seq_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
+    
+    // 5. Head sequence view [seq_len x d_head] with ld=d_model, batched over B
+    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->head_seq_view_layout, CUDA_R_32F, seq_len, attn->d_head, d_model));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->head_seq_view_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->head_seq_view_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->head_seq_view_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &seq_batch_stride, sizeof(seq_batch_stride)));
+    
+    // 6. Per-head attention matrices [seq_len x seq_len] batched over B only
+    int64_t score_batch_stride = (int64_t)num_heads * seq_len * seq_len;
+    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->head_attn_perhead_layout, CUDA_R_32F, seq_len, seq_len, seq_len));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->head_attn_perhead_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->head_attn_perhead_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->head_attn_perhead_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &score_batch_stride, sizeof(score_batch_stride)));
     
     // Free host memory
     free(h_W_q); free(h_W_k); free(h_W_v); free(h_W_o);
@@ -215,10 +172,10 @@ void free_attention(Attention* attn) {
     // Destroy layouts
     cublasLtMatrixLayoutDestroy(attn->weight_layout);
     cublasLtMatrixLayoutDestroy(attn->seq_batch_layout);
-    cublasLtMatrixLayoutDestroy(attn->head_seq_layout);
-    cublasLtMatrixLayoutDestroy(attn->head_attn_layout);
     cublasLtMatrixLayoutDestroy(attn->weight_broadcast_layout);
     cublasLtMatrixLayoutDestroy(attn->flattened_seq_layout);
+    cublasLtMatrixLayoutDestroy(attn->head_seq_view_layout);
+    cublasLtMatrixLayoutDestroy(attn->head_attn_perhead_layout);
     
     // Free device memory
     cudaFree(attn->d_W_q); cudaFree(attn->d_W_k); cudaFree(attn->d_W_v); cudaFree(attn->d_W_o);
@@ -226,12 +183,10 @@ void free_attention(Attention* attn) {
     cudaFree(attn->d_W_q_m); cudaFree(attn->d_W_q_v); cudaFree(attn->d_W_k_m); cudaFree(attn->d_W_k_v);
     cudaFree(attn->d_W_v_m); cudaFree(attn->d_W_v_v); cudaFree(attn->d_W_o_m); cudaFree(attn->d_W_o_v);
     cudaFree(attn->d_Q); cudaFree(attn->d_K); cudaFree(attn->d_V);
-    cudaFree(attn->d_Q_reshaped); cudaFree(attn->d_K_reshaped); cudaFree(attn->d_V_reshaped);
     cudaFree(attn->d_scores); cudaFree(attn->d_attn_weights);
-    cudaFree(attn->d_attn_output); cudaFree(attn->d_concat_output); cudaFree(attn->d_output);
-    cudaFree(attn->d_grad_output); cudaFree(attn->d_grad_concat_output); cudaFree(attn->d_grad_attn_output);
+    cudaFree(attn->d_concat_output); cudaFree(attn->d_output);
+    cudaFree(attn->d_grad_output); cudaFree(attn->d_grad_concat_output);
     cudaFree(attn->d_grad_weights); cudaFree(attn->d_grad_scores);
-    cudaFree(attn->d_grad_Q_reshaped); cudaFree(attn->d_grad_K_reshaped); cudaFree(attn->d_grad_V_reshaped);
     cudaFree(attn->d_grad_Q); cudaFree(attn->d_grad_K); cudaFree(attn->d_grad_V);
     
     // Free loss computation buffer
@@ -403,29 +358,26 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                                   attn->d_V, attn->seq_batch_layout,
                                   NULL, NULL, 0, 0));
     
-    // Step 2: Reshape Q, K, V for multi-head attention
-    // [batch, seq, d_model] -> [batch, num_heads, seq, d_head]
-    dim3 reshape_grid(attn->batch_size, attn->num_heads, attn->seq_len);
-    int reshape_threads = attn->d_head;
+    // Step 2: ZERO COPY! No reshape kernels - use head views directly
     
-    reshape_for_heads_kernel<<<reshape_grid, reshape_threads>>>(
-        attn->d_Q_reshaped, attn->d_Q, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
-    reshape_for_heads_kernel<<<reshape_grid, reshape_threads>>>(
-        attn->d_K_reshaped, attn->d_K, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
-    reshape_for_heads_kernel<<<reshape_grid, reshape_threads>>>(
-        attn->d_V_reshaped, attn->d_V, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
-    
-    // Step 3: Compute attention scores for all heads
-    // S = QKᵀ/√d_head (batched across all heads)
-    CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
-                                  attn->matmul_NT_desc,
-                                  &attn->scale,
-                                  attn->d_Q_reshaped, attn->head_seq_layout,
-                                  attn->d_K_reshaped, attn->head_seq_layout,
-                                  &beta,
-                                  attn->d_scores, attn->head_attn_layout,
-                                  attn->d_scores, attn->head_attn_layout,
-                                  NULL, NULL, 0, 0));
+    // Step 3: Compute attention scores per head using views (NO COPIES!)
+    for (int h = 0; h < attn->num_heads; h++) {
+        // Point to the h-th head's columns in Q and K - just pointer arithmetic!
+        float* Q_head = attn->d_Q + h * attn->d_head;
+        float* K_head = attn->d_K + h * attn->d_head;
+        float* scores_head = attn->d_scores + h * attn->seq_len * attn->seq_len;
+        
+        // S_h = Q_h K_h^T / √d_head using view layouts (ld = d_model)
+        CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
+                                      attn->matmul_NT_desc,
+                                      &attn->scale,
+                                      Q_head, attn->head_seq_view_layout,
+                                      K_head, attn->head_seq_view_layout,
+                                      &beta,
+                                      scores_head, attn->head_attn_perhead_layout,
+                                      scores_head, attn->head_attn_perhead_layout,
+                                      NULL, NULL, 0, 0));
+    }
     
     // Step 4: Apply softmax
     dim3 softmax_grid(attn->batch_size, attn->num_heads, attn->seq_len);
@@ -437,25 +389,28 @@ void forward_pass_attention(Attention* attn, float* d_X) {
             attn->d_attn_weights, attn->d_scores, attn->batch_size, attn->num_heads, attn->seq_len);
     }
     
-    // Step 5: Compute attention output for all heads
-    // Z = AV (batched across all heads)
-    CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
-                                  attn->matmul_NN_desc,
-                                  &alpha,
-                                  attn->d_attn_weights, attn->head_attn_layout,
-                                  attn->d_V_reshaped, attn->head_seq_layout,
-                                  &beta,
-                                  attn->d_attn_output, attn->head_seq_layout,
-                                  attn->d_attn_output, attn->head_seq_layout,
-                                  NULL, NULL, 0, 0));
+    // Step 5: Compute attention output per head, write DIRECTLY to concat buffer
+    for (int h = 0; h < attn->num_heads; h++) {
+        float* weights_head = attn->d_attn_weights + h * attn->seq_len * attn->seq_len;
+        float* V_head = attn->d_V + h * attn->d_head;
+        // Write directly to the h-th head's columns in concat_output!
+        float* output_head = attn->d_concat_output + h * attn->d_head;
+        
+        // Z_h = A_h V_h, write directly to concat columns
+        CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
+                                      attn->matmul_NN_desc,
+                                      &alpha,
+                                      weights_head, attn->head_attn_perhead_layout,
+                                      V_head, attn->head_seq_view_layout,
+                                      &beta,
+                                      output_head, attn->head_seq_view_layout,
+                                      output_head, attn->head_seq_view_layout,
+                                      NULL, NULL, 0, 0));
+    }
     
-    // Step 6: Concatenate heads
-    // [batch, num_heads, seq, d_head] -> [batch, seq, d_model]
-    reshape_from_heads_kernel<<<reshape_grid, reshape_threads>>>(
-        attn->d_concat_output, attn->d_attn_output, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    // Step 6: ZERO COPY! No reshape from heads - concat_output is already correct!
     
     // Step 7: Apply output projection
-    // Y = ConcatW_o
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_NN_desc,
                                   &alpha,
@@ -536,38 +491,40 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   attn->d_grad_concat_output, attn->seq_batch_layout,
                                   NULL, NULL, 0, 0));
     
-    // Step 6 (backward): Gradient through head concatenation
-    // [batch, seq, d_model] -> [batch, num_heads, seq, d_head]
-    dim3 reshape_grid(attn->batch_size, attn->num_heads, attn->seq_len);
-    int reshape_threads = attn->d_head;
+    // Step 6 (backward): ZERO COPY! No reshape - grad_concat_output is already per-head
     
-    reshape_for_heads_kernel<<<reshape_grid, reshape_threads>>>(
-        attn->d_grad_attn_output, attn->d_grad_concat_output, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    // Step 5 (backward): Gradient through attention output computation per head
+    for (int h = 0; h < attn->num_heads; h++) {
+        float* grad_concat_head = attn->d_grad_concat_output + h * attn->d_head;
+        float* weights_head = attn->d_attn_weights + h * attn->seq_len * attn->seq_len;
+        float* V_head = attn->d_V + h * attn->d_head;
+        float* grad_weights_head = attn->d_grad_weights + h * attn->seq_len * attn->seq_len;
+        float* grad_V_head = attn->d_grad_V + h * attn->d_head;
+        
+        // ∂L/∂A_h = (∂L/∂Z_h) V_h^T
+        CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
+                                      attn->matmul_NT_desc,
+                                      &alpha,
+                                      grad_concat_head, attn->head_seq_view_layout,
+                                      V_head, attn->head_seq_view_layout,
+                                      &beta,
+                                      grad_weights_head, attn->head_attn_perhead_layout,
+                                      grad_weights_head, attn->head_attn_perhead_layout,
+                                      NULL, NULL, 0, 0));
+        
+        // ∂L/∂V_h = A_h^T (∂L/∂Z_h)
+        CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
+                                      attn->matmul_TN_desc,
+                                      &alpha,
+                                      weights_head, attn->head_attn_perhead_layout,
+                                      grad_concat_head, attn->head_seq_view_layout,
+                                      &beta,
+                                      grad_V_head, attn->head_seq_view_layout,
+                                      grad_V_head, attn->head_seq_view_layout,
+                                      NULL, NULL, 0, 0));
+    }
     
-    // Step 5 (backward): Gradient through attention output computation
-    // ∂L/∂A = (∂L/∂Z)V^T (batched across all heads)
-    CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
-                                  attn->matmul_NT_desc,
-                                  &alpha,
-                                  attn->d_grad_attn_output, attn->head_seq_layout,
-                                  attn->d_V_reshaped, attn->head_seq_layout,
-                                  &beta,
-                                  attn->d_grad_weights, attn->head_attn_layout,
-                                  attn->d_grad_weights, attn->head_attn_layout,
-                                  NULL, NULL, 0, 0));
-    
-    // ∂L/∂V = A^T(∂L/∂Z) (batched across all heads)
-    CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
-                                  attn->matmul_TN_desc,
-                                  &alpha,
-                                  attn->d_attn_weights, attn->head_attn_layout,
-                                  attn->d_grad_attn_output, attn->head_seq_layout,
-                                  &beta,
-                                  attn->d_grad_V_reshaped, attn->head_seq_layout,
-                                  attn->d_grad_V_reshaped, attn->head_seq_layout,
-                                  NULL, NULL, 0, 0));
-    
-    // Step 4 (backward): Gradient through softmax
+    // Step 4 (backward): Gradient through softmax (UNCHANGED)
     dim3 softmax_grid(attn->batch_size, attn->num_heads, attn->seq_len);
     if (attn->is_causal) {
         softmax_causal_backward_kernel_attention<<<softmax_grid, 1>>>(
@@ -577,37 +534,38 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
             attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->num_heads, attn->seq_len);
     }
     
-    // Step 3 (backward): Gradient through attention scores
-    // ∂L/∂Q = (∂L/∂S)(K/√d_head) (batched across all heads)
-    CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
-                                  attn->matmul_NN_desc,
-                                  &attn->scale,
-                                  attn->d_grad_scores, attn->head_attn_layout,
-                                  attn->d_K_reshaped, attn->head_seq_layout,
-                                  &beta,
-                                  attn->d_grad_Q_reshaped, attn->head_seq_layout,
-                                  attn->d_grad_Q_reshaped, attn->head_seq_layout,
-                                  NULL, NULL, 0, 0));
+    // Step 3 (backward): Gradient through attention scores per head using views
+    for (int h = 0; h < attn->num_heads; h++) {
+        float* grad_scores_head = attn->d_grad_scores + h * attn->seq_len * attn->seq_len;
+        float* Q_head = attn->d_Q + h * attn->d_head;
+        float* K_head = attn->d_K + h * attn->d_head;
+        float* grad_Q_head = attn->d_grad_Q + h * attn->d_head;
+        float* grad_K_head = attn->d_grad_K + h * attn->d_head;
+        
+        // ∂L/∂Q_h = (∂L/∂S_h)(K_h/√d_head)
+        CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
+                                      attn->matmul_NN_desc,
+                                      &attn->scale,
+                                      grad_scores_head, attn->head_attn_perhead_layout,
+                                      K_head, attn->head_seq_view_layout,
+                                      &beta,
+                                      grad_Q_head, attn->head_seq_view_layout,
+                                      grad_Q_head, attn->head_seq_view_layout,
+                                      NULL, NULL, 0, 0));
+        
+        // ∂L/∂K_h = (∂L/∂S_h)^T(Q_h/√d_head)
+        CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
+                                      attn->matmul_TN_desc,
+                                      &attn->scale,
+                                      grad_scores_head, attn->head_attn_perhead_layout,
+                                      Q_head, attn->head_seq_view_layout,
+                                      &beta,
+                                      grad_K_head, attn->head_seq_view_layout,
+                                      grad_K_head, attn->head_seq_view_layout,
+                                      NULL, NULL, 0, 0));
+    }
     
-    // ∂L/∂K = (∂L/∂S)^T(Q/√d_head) (batched across all heads)
-    CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
-                                  attn->matmul_TN_desc,
-                                  &attn->scale,
-                                  attn->d_grad_scores, attn->head_attn_layout,
-                                  attn->d_Q_reshaped, attn->head_seq_layout,
-                                  &beta,
-                                  attn->d_grad_K_reshaped, attn->head_seq_layout,
-                                  attn->d_grad_K_reshaped, attn->head_seq_layout,
-                                  NULL, NULL, 0, 0));
-    
-    // Step 2 (backward): Reshape gradients back
-    // [batch, num_heads, seq, d_head] -> [batch, seq, d_model]
-    reshape_from_heads_kernel<<<reshape_grid, reshape_threads>>>(
-        attn->d_grad_Q, attn->d_grad_Q_reshaped, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
-    reshape_from_heads_kernel<<<reshape_grid, reshape_threads>>>(
-        attn->d_grad_K, attn->d_grad_K_reshaped, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
-    reshape_from_heads_kernel<<<reshape_grid, reshape_threads>>>(
-        attn->d_grad_V, attn->d_grad_V_reshaped, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    // Step 2 (backward): ZERO COPY! No reshape - gradients are already in [B,S,D] format
     
     // Step 1 (backward): Gradient through linear projections
     // ∂L/∂W_q = X^T(∂L/∂Q)
