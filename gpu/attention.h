@@ -57,20 +57,18 @@ typedef struct {
     int t;                     // Time step
     float weight_decay;        // Weight decay parameter for AdamW
     
-    // Forward pass buffers (NO MORE RESHAPED BUFFERS!)
+    // Forward pass buffers
     float* d_Q;            // Query matrix [batch_size x seq_len x d_model]
     float* d_K;            // Key matrix [batch_size x seq_len x d_model]
     float* d_V;            // Value matrix [batch_size x seq_len x d_model]
-    // REMOVED: d_Q_reshaped, d_K_reshaped, d_V_reshaped, d_attn_output
     float* d_scores;       // Attention scores [batch_size x num_heads x seq_len x seq_len]
     float* d_attn_weights; // Attention weights [batch_size x num_heads x seq_len x seq_len]
     float* d_concat_output; // Concatenated output [batch_size x seq_len x d_model]
     float* d_output;       // Final output [batch_size x seq_len x d_model]
     
-    // Backward pass buffers (REMOVED RESHAPED GRADIENT BUFFERS!)
+    // Backward pass buffers
     float* d_grad_output;      // [batch_size x seq_len x d_model]
     float* d_grad_concat_output; // [batch_size x seq_len x d_model]
-    // REMOVED: d_grad_attn_output, d_grad_Q_reshaped, d_grad_K_reshaped, d_grad_V_reshaped
     float* d_grad_weights;     // [batch_size x num_heads x seq_len x seq_len]
     float* d_grad_scores;      // [batch_size x num_heads x seq_len x seq_len]
     float* d_grad_Q;           // [batch_size x seq_len x d_model]
@@ -85,8 +83,8 @@ typedef struct {
     
     // cuBLASLt descriptors
     cublasLtMatmulDesc_t matmul_NN_desc; // A * B
-    cublasLtMatmulDesc_t matmul_NT_desc; // A * B^T
-    cublasLtMatmulDesc_t matmul_TN_desc; // A^T * B
+    cublasLtMatmulDesc_t matmul_NT_desc; // A * Bᵀ
+    cublasLtMatmulDesc_t matmul_TN_desc; // Aᵀ * B
     
     // Matrix layouts
     cublasLtMatrixLayout_t weight_layout;           // [d_model x d_model]
@@ -94,7 +92,7 @@ typedef struct {
     cublasLtMatrixLayout_t weight_broadcast_layout; // [d_model x d_model] broadcasted
     cublasLtMatrixLayout_t flattened_seq_layout;    // [batch_size*seq_len x d_model] flattened
     
-    // NEW: Zero-copy layouts for head views
+    // Head view layouts
     cublasLtMatrixLayout_t head_seq_view_layout;      // [seq_len x d_head] with ld=d_model, batched over B
     cublasLtMatrixLayout_t head_attn_perhead_layout;  // [seq_len x seq_len] batched over B only
     

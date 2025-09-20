@@ -358,16 +358,14 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                                   attn->d_V, attn->seq_batch_layout,
                                   NULL, NULL, 0, 0));
     
-    // Step 2: ZERO COPY! No reshape kernels - use head views directly
-    
-    // Step 3: Compute attention scores per head using views (NO COPIES!)
+    // Step 2: Compute attention scores per head
     for (int h = 0; h < attn->num_heads; h++) {
-        // Point to the h-th head's columns in Q and K - just pointer arithmetic!
+        // Select the h-th head's columns in Q and K via pointer offsets
         float* Q_head = attn->d_Q + h * attn->d_head;
         float* K_head = attn->d_K + h * attn->d_head;
         float* scores_head = attn->d_scores + h * attn->seq_len * attn->seq_len;
         
-        // S_h = Q_h K_h^T / √d_head using view layouts (ld = d_model)
+        // S_h = Q_h K_hᵀ / √d_head
         CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                       attn->matmul_NT_desc,
                                       &attn->scale,
@@ -379,7 +377,7 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                                       NULL, NULL, 0, 0));
     }
     
-    // Step 4: Apply softmax
+    // Step 3: Apply softmax
     dim3 softmax_grid(attn->batch_size, attn->num_heads, attn->seq_len);
     if (attn->is_causal) {
         softmax_causal_forward_kernel_attention<<<softmax_grid, 1>>>(
@@ -389,14 +387,14 @@ void forward_pass_attention(Attention* attn, float* d_X) {
             attn->d_attn_weights, attn->d_scores, attn->batch_size, attn->num_heads, attn->seq_len);
     }
     
-    // Step 5: Compute attention output per head, write DIRECTLY to concat buffer
+    // Step 4: Compute attention output per head and write to concatenation buffer
     for (int h = 0; h < attn->num_heads; h++) {
         float* weights_head = attn->d_attn_weights + h * attn->seq_len * attn->seq_len;
         float* V_head = attn->d_V + h * attn->d_head;
-        // Write directly to the h-th head's columns in concat_output!
+        // Write into the h-th head's column range in concat_output
         float* output_head = attn->d_concat_output + h * attn->d_head;
         
-        // Z_h = A_h V_h, write directly to concat columns
+        // Z_h = A_h V_h
         CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                       attn->matmul_NN_desc,
                                       &alpha,
@@ -408,9 +406,7 @@ void forward_pass_attention(Attention* attn, float* d_X) {
                                       NULL, NULL, 0, 0));
     }
     
-    // Step 6: ZERO COPY! No reshape from heads - concat_output is already correct!
-    
-    // Step 7: Apply output projection
+    // Step 5: Apply output projection
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_NN_desc,
                                   &alpha,
@@ -468,8 +464,8 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
     
-    // Step 7 (backward): Gradient through output projection
-    // ∂L/∂W_o = Concat^T(∂L/∂Y)
+    // Step 5 (backward): Gradient through output projection
+    // ∂L/∂W_o = Concatᵀ(∂L/∂Y)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &alpha,
@@ -480,7 +476,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   attn->d_W_o_grad, attn->weight_layout,
                                   NULL, NULL, 0, 0));
     
-    // ∂L/∂Concat = (∂L/∂Y)W_o^T
+    // ∂L/∂Concat = (∂L/∂Y)W_oᵀ
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_NT_desc,
                                   &alpha,
@@ -491,9 +487,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   attn->d_grad_concat_output, attn->seq_batch_layout,
                                   NULL, NULL, 0, 0));
     
-    // Step 6 (backward): ZERO COPY! No reshape - grad_concat_output is already per-head
-    
-    // Step 5 (backward): Gradient through attention output computation per head
+    // Step 4 (backward): Gradient through attention output computation per head
     for (int h = 0; h < attn->num_heads; h++) {
         float* grad_concat_head = attn->d_grad_concat_output + h * attn->d_head;
         float* weights_head = attn->d_attn_weights + h * attn->seq_len * attn->seq_len;
@@ -501,7 +495,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
         float* grad_weights_head = attn->d_grad_weights + h * attn->seq_len * attn->seq_len;
         float* grad_V_head = attn->d_grad_V + h * attn->d_head;
         
-        // ∂L/∂A_h = (∂L/∂Z_h) V_h^T
+        // ∂L/∂A_h = (∂L/∂Z_h) V_hᵀ
         CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                       attn->matmul_NT_desc,
                                       &alpha,
@@ -512,7 +506,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                       grad_weights_head, attn->head_attn_perhead_layout,
                                       NULL, NULL, 0, 0));
         
-        // ∂L/∂V_h = A_h^T (∂L/∂Z_h)
+        // ∂L/∂V_h = A_hᵀ(∂L/∂Z_h)
         CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                       attn->matmul_TN_desc,
                                       &alpha,
@@ -524,7 +518,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                       NULL, NULL, 0, 0));
     }
     
-    // Step 4 (backward): Gradient through softmax (UNCHANGED)
+    // Step 3 (backward): Gradient through softmax
     dim3 softmax_grid(attn->batch_size, attn->num_heads, attn->seq_len);
     if (attn->is_causal) {
         softmax_causal_backward_kernel_attention<<<softmax_grid, 1>>>(
@@ -534,7 +528,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
             attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->num_heads, attn->seq_len);
     }
     
-    // Step 3 (backward): Gradient through attention scores per head using views
+    // Step 2 (backward): Gradient through attention scores per head
     for (int h = 0; h < attn->num_heads; h++) {
         float* grad_scores_head = attn->d_grad_scores + h * attn->seq_len * attn->seq_len;
         float* Q_head = attn->d_Q + h * attn->d_head;
@@ -553,7 +547,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                       grad_Q_head, attn->head_seq_view_layout,
                                       NULL, NULL, 0, 0));
         
-        // ∂L/∂K_h = (∂L/∂S_h)^T(Q_h/√d_head)
+        // ∂L/∂K_h = (∂L/∂S_h)ᵀ(Q_h/√d_head)
         CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                       attn->matmul_TN_desc,
                                       &attn->scale,
@@ -565,10 +559,8 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                       NULL, NULL, 0, 0));
     }
     
-    // Step 2 (backward): ZERO COPY! No reshape - gradients are already in [B,S,D] format
-    
     // Step 1 (backward): Gradient through linear projections
-    // ∂L/∂W_q = X^T(∂L/∂Q)
+    // ∂L/∂W_q = Xᵀ(∂L/∂Q)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &alpha,
@@ -579,7 +571,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   attn->d_W_q_grad, attn->weight_layout,
                                   NULL, NULL, 0, 0));
     
-    // ∂L/∂W_k = X^T(∂L/∂K)
+    // ∂L/∂W_k = Xᵀ(∂L/∂K)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &alpha,
@@ -590,7 +582,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   attn->d_W_k_grad, attn->weight_layout,
                                   NULL, NULL, 0, 0));
     
-    // ∂L/∂W_v = X^T(∂L/∂V)
+    // ∂L/∂W_v = Xᵀ(∂L/∂V)
     CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                   attn->matmul_TN_desc,
                                   &alpha,
@@ -601,9 +593,9 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                   attn->d_W_v_grad, attn->weight_layout,
                                   NULL, NULL, 0, 0));
     
-    // ∂L/∂X = (∂L/∂Q)W_q^T + (∂L/∂K)W_k^T + (∂L/∂V)W_v^T
+    // ∂L/∂X = (∂L/∂Q)W_qᵀ + (∂L/∂K)W_kᵀ + (∂L/∂V)W_vᵀ
     if (d_grad_X != NULL) {
-        // ∂L/∂X = (∂L/∂Q)W_q^T
+        // ∂L/∂X = (∂L/∂Q)W_qᵀ
         CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                       attn->matmul_NT_desc,
                                       &alpha,
@@ -614,7 +606,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                       d_grad_X, attn->seq_batch_layout,
                                       NULL, NULL, 0, 0));
         
-        // ∂L/∂X += (∂L/∂K)W_k^T
+        // ∂L/∂X += (∂L/∂K)W_kᵀ
         CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                       attn->matmul_NT_desc,
                                       &alpha,
@@ -625,7 +617,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
                                       d_grad_X, attn->seq_batch_layout,
                                       NULL, NULL, 0, 0));
         
-        // ∂L/∂X += (∂L/∂V)W_v^T
+        // ∂L/∂X += (∂L/∂V)W_vᵀ
         CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle,
                                       attn->matmul_NT_desc,
                                       &alpha,
