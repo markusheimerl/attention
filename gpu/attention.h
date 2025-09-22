@@ -78,20 +78,15 @@ typedef struct {
     // Loss computation buffer
     float* d_loss_result;      // [1]
 
-    // cuBLASLt handle
+    // cuBLASLt handle and descriptor
     cublasLtHandle_t cublaslt_handle;
+    cublasLtMatmulDesc_t matmul_desc;
     
-    // cuBLASLt descriptors
-    cublasLtMatmulDesc_t matmul_NN_desc; // A * B
-    cublasLtMatmulDesc_t matmul_NT_desc; // A * B^T
-    cublasLtMatmulDesc_t matmul_TN_desc; // A^T * B
-    
-    // Matrix layouts
-    cublasLtMatrixLayout_t weight_layout;           // [d_model x d_model]
-    cublasLtMatrixLayout_t seq_batch_layout;        // [seq_len x d_model] batched
-    cublasLtMatrixLayout_t attn_batch_layout;       // [seq_len x seq_len] batched  
-    cublasLtMatrixLayout_t weight_broadcast_layout; // [d_model x d_model] broadcasted
-    cublasLtMatrixLayout_t flattened_seq_layout;    // [batch_size*seq_len x d_model] flattened
+    // Matrix layouts (reduced set)
+    cublasLtMatrixLayout_t weight_layout;     // [d_model x d_model]
+    cublasLtMatrixLayout_t seq_flat_layout;   // [batch_size * seq_len x d_model]
+    cublasLtMatrixLayout_t seq_batch_layout;  // [seq_len x d_model] batched
+    cublasLtMatrixLayout_t attn_batch_layout; // [seq_len x seq_len] batched
     
     // Dimensions
     int seq_len;
