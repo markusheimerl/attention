@@ -288,26 +288,26 @@ void forward_pass_attention(Attention* attn, float* d_X) {
     const float beta = 0.0f;
     
     // Step 1: Compute Q, K, V using flattened operations
-    // Q = X W_q (flattened: [B * L x D] * [D x D] -> [B * L x D])
+    // Q = XW_q (flattened: [B * L x D] * [D x D] -> [B * L x D])
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &alpha,
               d_X, attn->seq_flat_layout,
               attn->d_W_q, attn->weight_layout,
               &beta, attn->d_Q, attn->seq_flat_layout);
     
-    // K = X W_k
+    // K = XW_k
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &alpha,
               d_X, attn->seq_flat_layout,
               attn->d_W_k, attn->weight_layout,
               &beta, attn->d_K, attn->seq_flat_layout);
     
-    // V = X W_v
+    // V = XW_v
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &alpha,
               d_X, attn->seq_flat_layout,
               attn->d_W_v, attn->weight_layout,
               &beta, attn->d_V, attn->seq_flat_layout);
     
     // Step 2: Compute attention scores (batched: [L x D] * [D x L] -> [L x L])
-    // S = Q Kᵀ / √d_model
+    // S = QKᵀ/√d_model
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &attn->scale,
               attn->d_Q, attn->seq_batch_layout,
               attn->d_K, attn->seq_batch_layout,
@@ -322,14 +322,14 @@ void forward_pass_attention(Attention* attn, float* d_X) {
     }
     
     // Step 4: Compute attention output (batched: [L x L] * [L x D] -> [L x D])
-    // Z = A V
+    // Z = AV
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &alpha,
               attn->d_attn_weights, attn->attn_batch_layout,
               attn->d_V, attn->seq_batch_layout,
               &beta, attn->d_attn_output, attn->seq_batch_layout);
     
     // Step 5: Apply output projection (flattened: [B * L x D] * [D x D] -> [B * L x D])
-    // Y = Z W_o
+    // Y = ZW_o
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &alpha,
               attn->d_attn_output, attn->seq_flat_layout,
               attn->d_W_o, attn->weight_layout,
@@ -383,26 +383,26 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     const float beta = 0.0f;
     
     // Step 5 (backward): Gradient through output projection
-    // ∂L/∂W_o = Zᵀ (∂L/∂Y) (flattened)
+    // ∂L/∂W_o = Zᵀ(∂L/∂Y) (flattened)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
               attn->d_attn_output, attn->seq_flat_layout,
               attn->d_grad_output, attn->seq_flat_layout,
               &beta, attn->d_W_o_grad, attn->weight_layout);
     
-    // ∂L/∂Z = (∂L/∂Y) W_oᵀ (flattened)
+    // ∂L/∂Z = (∂L/∂Y)W_oᵀ (flattened)
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
               attn->d_grad_output, attn->seq_flat_layout,
               attn->d_W_o, attn->weight_layout,
               &beta, attn->d_grad_attn_output, attn->seq_flat_layout);
     
     // Step 4 (backward): Gradient through attention output computation
-    // ∂L/∂A = (∂L/∂Z) Vᵀ (batched)
+    // ∂L/∂A = (∂L/∂Z)Vᵀ (batched)
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
               attn->d_grad_attn_output, attn->seq_batch_layout,
               attn->d_V, attn->seq_batch_layout,
               &beta, attn->d_grad_weights, attn->attn_batch_layout);
     
-    // ∂L/∂V = Aᵀ (∂L/∂Z) (batched)
+    // ∂L/∂V = Aᵀ(∂L/∂Z) (batched)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
               attn->d_attn_weights, attn->attn_batch_layout,
               attn->d_grad_attn_output, attn->seq_batch_layout,
@@ -417,52 +417,52 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     }
     
     // Step 2 (backward): Gradient through attention scores
-    // ∂L/∂Q = (∂L/∂S) K / √d_model (batched)
+    // ∂L/∂Q = (∂L/∂S)K/√d_model (batched)
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &attn->scale,
               attn->d_grad_scores, attn->attn_batch_layout,
               attn->d_K, attn->seq_batch_layout,
               &beta, attn->d_grad_Q, attn->seq_batch_layout);
     
-    // ∂L/∂K = (∂L/∂S)ᵀ Q / √d_model (batched)
+    // ∂L/∂K = (∂L/∂S)ᵀQ/√d_model (batched)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &attn->scale,
               attn->d_grad_scores, attn->attn_batch_layout,
               attn->d_Q, attn->seq_batch_layout,
               &beta, attn->d_grad_K, attn->seq_batch_layout);
     
     // Step 1 (backward): Gradient through linear projections
-    // ∂L/∂W_q = Xᵀ (∂L/∂Q) (flattened)
+    // ∂L/∂W_q = Xᵀ(∂L/∂Q) (flattened)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
               d_X, attn->seq_flat_layout,
               attn->d_grad_Q, attn->seq_flat_layout,
               &beta, attn->d_W_q_grad, attn->weight_layout);
     
-    // ∂L/∂W_k = Xᵀ (∂L/∂K) (flattened)
+    // ∂L/∂W_k = Xᵀ(∂L/∂K) (flattened)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
               d_X, attn->seq_flat_layout,
               attn->d_grad_K, attn->seq_flat_layout,
               &beta, attn->d_W_k_grad, attn->weight_layout);
     
-    // ∂L/∂W_v = Xᵀ (∂L/∂V) (flattened)
+    // ∂L/∂W_v = Xᵀ(∂L/∂V) (flattened)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
               d_X, attn->seq_flat_layout,
               attn->d_grad_V, attn->seq_flat_layout,
               &beta, attn->d_W_v_grad, attn->weight_layout);
     
-    // ∂L/∂X = (∂L/∂Q) W_qᵀ + (∂L/∂K) W_kᵀ + (∂L/∂V) W_vᵀ (flattened)
+    // ∂L/∂X = (∂L/∂Q)W_qᵀ + (∂L/∂K)W_kᵀ + (∂L/∂V)W_vᵀ (flattened)
     if (d_grad_X != NULL) {
-        // ∂L/∂X = (∂L/∂Q) W_qᵀ
+        // ∂L/∂X = (∂L/∂Q)W_qᵀ
         LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
                   attn->d_grad_Q, attn->seq_flat_layout,
                   attn->d_W_q, attn->weight_layout,
                   &beta, d_grad_X, attn->seq_flat_layout);
         
-        // ∂L/∂X += (∂L/∂K) W_kᵀ
+        // ∂L/∂X += (∂L/∂K)W_kᵀ
         LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
                   attn->d_grad_K, attn->seq_flat_layout,
                   attn->d_W_k, attn->weight_layout,
                   &alpha, d_grad_X, attn->seq_flat_layout);
         
-        // ∂L/∂X += (∂L/∂V) W_vᵀ
+        // ∂L/∂X += (∂L/∂V)W_vᵀ
         LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
                   attn->d_grad_V, attn->seq_flat_layout,
                   attn->d_W_v, attn->weight_layout,
