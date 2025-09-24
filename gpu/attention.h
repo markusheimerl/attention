@@ -33,6 +33,21 @@
 } while(0)
 #endif
 
+// cuBLASLt matrix multiplication macro
+#ifndef LT_MATMUL
+#define LT_MATMUL(attn, opA, opB, alpha, A, layA, B, layB, beta, C, layC) do { \
+    cublasOperation_t _opA = opA, _opB = opB; \
+    CHECK_CUBLASLT(cublasLtMatmulDescSetAttribute(attn->matmul_desc, \
+                   CUBLASLT_MATMUL_DESC_TRANSA, &_opA, sizeof(_opA))); \
+    CHECK_CUBLASLT(cublasLtMatmulDescSetAttribute(attn->matmul_desc, \
+                   CUBLASLT_MATMUL_DESC_TRANSB, &_opB, sizeof(_opB))); \
+    CHECK_CUBLASLT(cublasLtMatmul(attn->cublaslt_handle, attn->matmul_desc, \
+                                  alpha, A, layA, B, layB, \
+                                  beta, C, layC, \
+                                  C, layC, NULL, NULL, 0, 0)); \
+} while(0)
+#endif
+
 typedef struct {
     // Device weights for attention mechanism
     float* d_W_q;      // Query projection [d_model x d_model]
@@ -78,20 +93,15 @@ typedef struct {
     // Loss computation buffer
     float* d_loss_result;      // [1]
 
-    // cuBLASLt handle
+    // cuBLASLt handle and descriptor
     cublasLtHandle_t cublaslt_handle;
-    
-    // cuBLASLt descriptors
-    cublasLtMatmulDesc_t matmul_NN_desc; // A * B
-    cublasLtMatmulDesc_t matmul_NT_desc; // A * B^T
-    cublasLtMatmulDesc_t matmul_TN_desc; // A^T * B
+    cublasLtMatmulDesc_t matmul_desc;
     
     // Matrix layouts
-    cublasLtMatrixLayout_t weight_layout;           // [d_model x d_model]
-    cublasLtMatrixLayout_t seq_batch_layout;        // [seq_len x d_model] batched
-    cublasLtMatrixLayout_t attn_batch_layout;       // [seq_len x seq_len] batched  
-    cublasLtMatrixLayout_t weight_broadcast_layout; // [d_model x d_model] broadcasted
-    cublasLtMatrixLayout_t flattened_seq_layout;    // [batch_size*seq_len x d_model] flattened
+    cublasLtMatrixLayout_t weight_layout;     // [d_model x d_model]
+    cublasLtMatrixLayout_t seq_flat_layout;   // [batch_size * seq_len x d_model]
+    cublasLtMatrixLayout_t seq_batch_layout;  // [seq_len x d_model] batched
+    cublasLtMatrixLayout_t attn_batch_layout; // [seq_len x seq_len] batched
     
     // Dimensions
     int seq_len;
