@@ -62,7 +62,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     CHECK_CUDA(cudaMalloc(&attn->d_W_o_m, weight_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_W_o_v, weight_size * sizeof(float)));
     
-    // Allocate device memory for forward pass buffers
+    // Allocate device memory for buffers
     CHECK_CUDA(cudaMalloc(&attn->d_Q, seq_batch_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_K, seq_batch_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_V, seq_batch_size * sizeof(float)));
@@ -70,15 +70,6 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     CHECK_CUDA(cudaMalloc(&attn->d_attn_weights, attn_matrix_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_attn_output, seq_batch_size * sizeof(float)));
     CHECK_CUDA(cudaMalloc(&attn->d_output, seq_batch_size * sizeof(float)));
-    
-    // Allocate device memory for backward pass buffers
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_output, seq_batch_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_attn_output, seq_batch_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_weights, attn_matrix_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_scores, attn_matrix_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_Q, seq_batch_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_K, seq_batch_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_V, seq_batch_size * sizeof(float)));
     
     // Allocate single device float for loss computation
     CHECK_CUDA(cudaMalloc(&attn->d_loss_result, sizeof(float)));
@@ -153,8 +144,6 @@ void free_attention(Attention* attn) {
     cudaFree(attn->d_Q); cudaFree(attn->d_K); cudaFree(attn->d_V);
     cudaFree(attn->d_scores); cudaFree(attn->d_attn_weights);
     cudaFree(attn->d_attn_output); cudaFree(attn->d_output);
-    cudaFree(attn->d_grad_output); cudaFree(attn->d_grad_attn_output); cudaFree(attn->d_grad_weights);
-    cudaFree(attn->d_grad_scores); cudaFree(attn->d_grad_Q); cudaFree(attn->d_grad_K); cudaFree(attn->d_grad_V);
     
     // Free loss computation buffer
     cudaFree(attn->d_loss_result);
@@ -300,7 +289,8 @@ __global__ static void softmax_backward_kernel_attention(float* grad_scores, flo
     
     // ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A)
     for (int j = threadIdx.x; j < seq_len; j += blockDim.x) {
-        grad_score_row[j] = weight_row[j] * (grad_weight_row[j] - sum_term);
+        float gwa = grad_weight_row[j];
+        grad_score_row[j] = weight_row[j] * (gwa - sum_term);
     }
 }
 
@@ -336,7 +326,8 @@ __global__ static void softmax_causal_backward_kernel_attention(float* grad_scor
     // ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A) for j <= i, 0 for j > i
     for (int j = threadIdx.x; j < seq_len; j += blockDim.x) {
         if (j <= row_idx) {
-            grad_score_row[j] = weight_row[j] * (grad_weight_row[j] - sum_term);
+            float gwa = grad_weight_row[j];
+            grad_score_row[j] = weight_row[j] * (gwa - sum_term);
         } else {
             grad_score_row[j] = 0.0f;
         }
@@ -402,8 +393,10 @@ void forward_pass_attention(Attention* attn, float* d_X) {
 __global__ static void compute_loss_and_gradient_kernel_attention(float* grad_output, float* predictions, float* targets, float* loss_result, int size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
-        grad_output[idx] = predictions[idx] - targets[idx];
-        atomicAdd(loss_result, grad_output[idx] * grad_output[idx]);
+        float pred = predictions[idx];
+        float diff = pred - targets[idx];
+        grad_output[idx] = diff;
+        atomicAdd(loss_result, diff * diff);
     }
 }
 
@@ -419,7 +412,7 @@ float calculate_loss_attention(Attention* attn, float* d_y) {
     
     // Compute gradient and accumulate loss
     compute_loss_and_gradient_kernel_attention<<<num_blocks, block_size>>>(
-        attn->d_grad_output, attn->d_output, d_y, attn->d_loss_result, total_elements
+        attn->d_output, attn->d_output, d_y, attn->d_loss_result, total_elements
     );
     
     // Copy result back to host
@@ -448,88 +441,88 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     // ∂L/∂W_o = Zᵀ(∂L/∂Y) (flattened)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
               attn->d_attn_output, attn->seq_flat_layout,
-              attn->d_grad_output, attn->seq_flat_layout,
+              attn->d_output, attn->seq_flat_layout,
               &beta, attn->d_W_o_grad, attn->weight_layout);
     
     // ∂L/∂Z = (∂L/∂Y)W_oᵀ (flattened)
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
-              attn->d_grad_output, attn->seq_flat_layout,
+              attn->d_output, attn->seq_flat_layout,
               attn->d_W_o, attn->weight_layout,
-              &beta, attn->d_grad_attn_output, attn->seq_flat_layout);
+              &beta, attn->d_attn_output, attn->seq_flat_layout);
     
     // Step 4 (backward): Gradient through attention output computation
     // ∂L/∂A = (∂L/∂Z)Vᵀ (batched)
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
-              attn->d_grad_attn_output, attn->seq_batch_layout,
+              attn->d_attn_output, attn->seq_batch_layout,
               attn->d_V, attn->seq_batch_layout,
-              &beta, attn->d_grad_weights, attn->attn_batch_layout);
+              &beta, attn->d_scores, attn->attn_batch_layout);
     
     // ∂L/∂V = Aᵀ(∂L/∂Z) (batched)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
               attn->d_attn_weights, attn->attn_batch_layout,
-              attn->d_grad_attn_output, attn->seq_batch_layout,
-              &beta, attn->d_grad_V, attn->seq_batch_layout);
+              attn->d_attn_output, attn->seq_batch_layout,
+              &beta, attn->d_V, attn->seq_batch_layout);
     
     // Step 3 (backward): Gradient through softmax
     if (attn->is_causal) {
         softmax_causal_backward_kernel_attention<<<attn->batch_size * attn->seq_len, 256>>>(
-            attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, 
+            attn->d_scores, attn->d_scores, attn->d_attn_weights, 
             attn->batch_size, attn->seq_len);
     } else {
         softmax_backward_kernel_attention<<<attn->batch_size * attn->seq_len, 256>>>(
-            attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, 
+            attn->d_scores, attn->d_scores, attn->d_attn_weights, 
             attn->batch_size, attn->seq_len);
     }
     
     // Step 2 (backward): Gradient through attention scores
-    // ∂L/∂Q = (∂L/∂S)K/√d_model (batched)
-    LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &attn->scale,
-              attn->d_grad_scores, attn->attn_batch_layout,
-              attn->d_K, attn->seq_batch_layout,
-              &beta, attn->d_grad_Q, attn->seq_batch_layout);
-    
     // ∂L/∂K = (∂L/∂S)ᵀQ/√d_model (batched)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &attn->scale,
-              attn->d_grad_scores, attn->attn_batch_layout,
+              attn->d_scores, attn->attn_batch_layout,
               attn->d_Q, attn->seq_batch_layout,
-              &beta, attn->d_grad_K, attn->seq_batch_layout);
+              &beta, attn->d_attn_output, attn->seq_batch_layout);
+    
+    // ∂L/∂Q = (∂L/∂S)K/√d_model (batched)
+    LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &attn->scale,
+              attn->d_scores, attn->attn_batch_layout,
+              attn->d_K, attn->seq_batch_layout,
+              &beta, attn->d_Q, attn->seq_batch_layout);
     
     // Step 1 (backward): Gradient through linear projections
     // ∂L/∂W_q = Xᵀ(∂L/∂Q) (flattened)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
               d_X, attn->seq_flat_layout,
-              attn->d_grad_Q, attn->seq_flat_layout,
+              attn->d_Q, attn->seq_flat_layout,
               &beta, attn->d_W_q_grad, attn->weight_layout);
     
     // ∂L/∂W_k = Xᵀ(∂L/∂K) (flattened)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
               d_X, attn->seq_flat_layout,
-              attn->d_grad_K, attn->seq_flat_layout,
+              attn->d_attn_output, attn->seq_flat_layout,
               &beta, attn->d_W_k_grad, attn->weight_layout);
     
     // ∂L/∂W_v = Xᵀ(∂L/∂V) (flattened)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
               d_X, attn->seq_flat_layout,
-              attn->d_grad_V, attn->seq_flat_layout,
+              attn->d_V, attn->seq_flat_layout,
               &beta, attn->d_W_v_grad, attn->weight_layout);
     
     // ∂L/∂X = (∂L/∂Q)W_qᵀ + (∂L/∂K)W_kᵀ + (∂L/∂V)W_vᵀ (flattened)
     if (d_grad_X != NULL) {
         // ∂L/∂X = (∂L/∂Q)W_qᵀ
         LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
-                  attn->d_grad_Q, attn->seq_flat_layout,
+                  attn->d_Q, attn->seq_flat_layout,
                   attn->d_W_q, attn->weight_layout,
                   &beta, d_grad_X, attn->seq_flat_layout);
         
         // ∂L/∂X += (∂L/∂K)W_kᵀ
         LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
-                  attn->d_grad_K, attn->seq_flat_layout,
+                  attn->d_attn_output, attn->seq_flat_layout,
                   attn->d_W_k, attn->weight_layout,
                   &alpha, d_grad_X, attn->seq_flat_layout);
         
         // ∂L/∂X += (∂L/∂V)W_vᵀ
         LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
-                  attn->d_grad_V, attn->seq_flat_layout,
+                  attn->d_V, attn->seq_flat_layout,
                   attn->d_W_v, attn->weight_layout,
                   &alpha, d_grad_X, attn->seq_flat_layout);
     }

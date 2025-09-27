@@ -72,7 +72,7 @@ typedef struct {
     int t;                     // Time step
     float weight_decay;        // Weight decay parameter for AdamW
     
-    // Forward pass buffers
+    // Buffers
     float* d_Q;            // Query matrix [batch_size x seq_len x d_model]
     float* d_K;            // Key matrix [batch_size x seq_len x d_model]
     float* d_V;            // Value matrix [batch_size x seq_len x d_model]
@@ -80,15 +80,6 @@ typedef struct {
     float* d_attn_weights; // Attention weights [batch_size x seq_len x seq_len]
     float* d_attn_output;  // Attention output [batch_size x seq_len x d_model]
     float* d_output;       // Final output [batch_size x seq_len x d_model]
-    
-    // Backward pass buffers
-    float* d_grad_output;      // [batch_size x seq_len x d_model]
-    float* d_grad_attn_output; // [batch_size x seq_len x d_model]
-    float* d_grad_weights;     // [batch_size x seq_len x seq_len]
-    float* d_grad_scores;      // [batch_size x seq_len x seq_len]
-    float* d_grad_Q;           // [batch_size x seq_len x d_model]
-    float* d_grad_K;           // [batch_size x seq_len x d_model]
-    float* d_grad_V;           // [batch_size x seq_len x d_model]
 
     // Loss computation buffer
     float* d_loss_result;      // [1]
