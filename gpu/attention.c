@@ -729,7 +729,7 @@ Attention* load_attention(const char* filename, int custom_batch_size, cublasLtH
     // Use custom_batch_size if provided, otherwise use stored value
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
-    Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, cublaslt_handle);
+    Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, apply_rope, cublaslt_handle);
     
     int weight_size = d_model * d_model;
     
