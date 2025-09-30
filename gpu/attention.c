@@ -1,7 +1,7 @@
 #include "attention.h"
 
 // Initialize the attention layer
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cublasLtHandle_t cublaslt_handle) {
+Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, bool apply_rope, cublasLtHandle_t cublaslt_handle) {
     Attention* attn = (Attention*)malloc(sizeof(Attention));
     
     // Store dimensions
@@ -10,6 +10,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     attn->batch_size = batch_size;
     attn->scale = 1.0f / sqrtf(d_model);
     attn->is_causal = is_causal;
+    attn->apply_rope = apply_rope;
     
     // Initialize Adam parameters
     attn->beta1 = 0.9f;
@@ -149,6 +150,52 @@ void free_attention(Attention* attn) {
     cudaFree(attn->d_loss_result);
     
     free(attn);
+}
+
+// CUDA kernel for applying RoPE
+__global__ static void apply_rope_kernel(float* QK, int batch_size, int seq_len, int d_model) {
+    int batch_idx = blockIdx.x;
+    int pos = blockIdx.y;
+    int d_pair = threadIdx.x;
+    
+    if (batch_idx >= batch_size || pos >= seq_len || d_pair >= d_model/2) return;
+    
+    int base_idx = batch_idx * seq_len * d_model + pos * d_model + d_pair * 2;
+    
+    float x0 = QK[base_idx];
+    float x1 = QK[base_idx + 1];
+    
+    // Compute rotation angle
+    // Use sincosf for simultaneous sin/cos computation
+    float sin_theta, cos_theta;
+    sincosf(pos * expf(-logf(10000.0f) * (2.0f * d_pair) / d_model), &sin_theta, &cos_theta);
+    
+    // Apply rotation
+    QK[base_idx]     = x0 * cos_theta - x1 * sin_theta;
+    QK[base_idx + 1] = x0 * sin_theta + x1 * cos_theta;
+}
+
+// CUDA kernel for RoPE backward pass
+__global__ static void apply_rope_backward_kernel(float* grad_QK, int batch_size, int seq_len, int d_model) {
+    int batch_idx = blockIdx.x;
+    int pos = blockIdx.y;
+    int d_pair = threadIdx.x;
+    
+    if (batch_idx >= batch_size || pos >= seq_len || d_pair >= d_model/2) return;
+    
+    int base_idx = batch_idx * seq_len * d_model + pos * d_model + d_pair * 2;
+    
+    float g0 = grad_QK[base_idx];
+    float g1 = grad_QK[base_idx + 1];
+    
+    // Compute rotation angle
+    // Use sincosf for simultaneous sin/cos computation
+    float sin_theta, cos_theta;
+    sincosf(pos * expf(-logf(10000.0f) * (2.0f * d_pair) / d_model), &sin_theta, &cos_theta);
+    
+    // Backward rotation
+    grad_QK[base_idx]     = g0 * cos_theta + g1 * sin_theta;
+    grad_QK[base_idx + 1] = -g0 * sin_theta + g1 * cos_theta;
 }
 
 // CUDA kernel for softmax forward pass
@@ -358,6 +405,13 @@ void forward_pass_attention(Attention* attn, float* d_X) {
               attn->d_W_v, attn->weight_layout,
               &beta, attn->d_V, attn->seq_flat_layout);
     
+    // Step 1.5: Apply RoPE to Q and K
+    if (attn->apply_rope) {
+        dim3 rope_grid(attn->batch_size, attn->seq_len);
+        apply_rope_kernel<<<rope_grid, attn->d_model / 2>>>(attn->d_Q, attn->batch_size, attn->seq_len, attn->d_model);
+        apply_rope_kernel<<<rope_grid, attn->d_model / 2>>>(attn->d_K, attn->batch_size, attn->seq_len, attn->d_model);
+    }
+
     // Step 2: Compute attention scores (batched: [L x D] * [D x L] -> [L x L])
     // S = QKᵀ/√d_model
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &attn->scale,
@@ -487,6 +541,14 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
               attn->d_K, attn->seq_batch_layout,
               &beta, attn->d_Q, attn->seq_batch_layout);
     
+    // Step 1.5 (backward): Gradient through RoPE
+    // Apply inverse RoPE to gradients of Q and K
+    if (attn->apply_rope) {
+        dim3 rope_grid(attn->batch_size, attn->seq_len);
+        apply_rope_backward_kernel<<<rope_grid, attn->d_model / 2>>>(attn->d_Q, attn->batch_size, attn->seq_len, attn->d_model);
+        apply_rope_backward_kernel<<<rope_grid, attn->d_model / 2>>>(attn->d_attn_output, attn->batch_size, attn->seq_len, attn->d_model);
+    }
+
     // Step 1 (backward): Gradient through linear projections
     // ∂L/∂W_q = Xᵀ(∂L/∂Q) (flattened)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
@@ -587,6 +649,7 @@ void save_attention(Attention* attn, const char* filename) {
     fwrite(&attn->d_model, sizeof(int), 1, file);
     fwrite(&attn->batch_size, sizeof(int), 1, file);
     fwrite(&attn->is_causal, sizeof(bool), 1, file);
+    fwrite(&attn->apply_rope, sizeof(bool), 1, file);
     
     int weight_size = attn->d_model * attn->d_model;
     
@@ -656,11 +719,12 @@ Attention* load_attention(const char* filename, int custom_batch_size, cublasLtH
     
     // Read dimensions
     int seq_len, d_model, stored_batch_size;
-    bool is_causal;
+    bool is_causal, apply_rope;
     fread(&seq_len, sizeof(int), 1, file);
     fread(&d_model, sizeof(int), 1, file);
     fread(&stored_batch_size, sizeof(int), 1, file);
     fread(&is_causal, sizeof(bool), 1, file);
+    fread(&apply_rope, sizeof(bool), 1, file);
     
     // Use custom_batch_size if provided, otherwise use stored value
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;

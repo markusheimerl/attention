@@ -100,6 +100,7 @@ typedef struct {
     int batch_size;
     float scale;
     bool is_causal;
+    bool apply_rope;
 } Attention;
 
 // Function prototypes
