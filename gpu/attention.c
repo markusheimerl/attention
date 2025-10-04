@@ -166,7 +166,6 @@ __global__ static void apply_rope_kernel(float* QK, int batch_size, int seq_len,
     float x1 = QK[base_idx + 1];
     
     // Compute rotation angle
-    // Use sincosf for simultaneous sin/cos computation
     float sin_theta, cos_theta;
     sincosf(pos * expf(-logf(10000.0f) * (2.0f * d_pair) / d_model), &sin_theta, &cos_theta);
     
@@ -189,12 +188,11 @@ __global__ static void apply_rope_backward_kernel(float* grad_QK, int batch_size
     float g1 = grad_QK[base_idx + 1];
     
     // Compute rotation angle
-    // Use sincosf for simultaneous sin/cos computation
     float sin_theta, cos_theta;
     sincosf(pos * expf(-logf(10000.0f) * (2.0f * d_pair) / d_model), &sin_theta, &cos_theta);
     
     // Backward rotation
-    grad_QK[base_idx]     = g0 * cos_theta + g1 * sin_theta;
+    grad_QK[base_idx]     =  g0 * cos_theta + g1 * sin_theta;
     grad_QK[base_idx + 1] = -g0 * sin_theta + g1 * cos_theta;
 }
 
