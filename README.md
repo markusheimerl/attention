@@ -9,7 +9,7 @@ Q &= XW_q \\
 K &= XW_k \\
 V &= XW_v \\
 S &= \frac{QK^T}{\sqrt{d}} \\
-A_{ij} &= \frac{\exp(S_{ij})}{\sum_k \exp(S_{ik})} \\
+A_{ij} &= \frac{e^{S_{ij}}}{\sum_k e^{S_{ik}}} \\
 Z &= AV \\
 Y &= ZW_o
 \end{align*}
@@ -50,5 +50,5 @@ The implementation leverages BLAS for matrix operations, enabling efficient comp
 ```
 sudo apt update
 sudo apt install clang time libopenblas-dev
-make run
+make run -j 6
 ```
