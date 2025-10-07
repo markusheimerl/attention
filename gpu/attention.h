@@ -72,23 +72,24 @@ typedef struct {
     int t;                     // Time step
     float weight_decay;        // Weight decay parameter for AdamW
     
-    // Forward pass buffers
-    float* d_Q;            // Query matrix [batch_size x seq_len x d_model]
-    float* d_K;            // Key matrix [batch_size x seq_len x d_model]
-    float* d_V;            // Value matrix [batch_size x seq_len x d_model]
-    float* d_scores;       // Attention scores [batch_size x seq_len x seq_len]
-    float* d_attn_weights; // Attention weights [batch_size x seq_len x seq_len]
-    float* d_attn_output;  // Attention output [batch_size x seq_len x d_model]
-    float* d_output;       // Final output [batch_size x seq_len x d_model]
+    // Forward pass buffers (memory optimized - reused for different layouts)
+    float* d_Q;            // Query: [B,L,D] then reshaped to [B,H,L,d]
+    float* d_K;            // Key: [B,L,D] then reshaped to [B,H,L,d]
+    float* d_V;            // Value: [B,L,D] then reshaped to [B,H,L,d]
+    float* d_scores;       // Attention scores [B,H,L,L], reused as weights after softmax
+    float* d_attn_output;  // [B,H,L,d] then reshaped to [B,L,D]
+    float* d_output;       // Final output [B,L,D]
     
-    // Backward pass buffers
-    float* d_grad_output;      // [batch_size x seq_len x d_model]
-    float* d_grad_attn_output; // [batch_size x seq_len x d_model]
-    float* d_grad_weights;     // [batch_size x seq_len x seq_len]
-    float* d_grad_scores;      // [batch_size x seq_len x seq_len]
-    float* d_grad_Q;           // [batch_size x seq_len x d_model]
-    float* d_grad_K;           // [batch_size x seq_len x d_model]
-    float* d_grad_V;           // [batch_size x seq_len x d_model]
+    // Backward pass buffers (memory optimized)
+    float* d_grad_output;      // [B,L,D]
+    float* d_grad_attn_output; // [B,L,D] then reshaped to [B,H,L,d]
+    float* d_grad_scores;      // [B,H,L,L], reused as grad_weights
+    float* d_grad_Q;           // [B,H,L,d] then reshaped to [B,L,D]
+    float* d_grad_K;           // [B,H,L,d] then reshaped to [B,L,D]
+    float* d_grad_V;           // [B,H,L,d] then reshaped to [B,L,D]
+    
+    // Workspace for reshape operations (single shared buffer)
+    float* d_workspace;        // [B,L,D] temporary buffer
 
     // Loss computation buffer
     float* d_loss_result;      // [1]
@@ -100,19 +101,21 @@ typedef struct {
     // Matrix layouts
     cublasLtMatrixLayout_t weight_layout;     // [d_model x d_model]
     cublasLtMatrixLayout_t seq_flat_layout;   // [batch_size * seq_len x d_model]
-    cublasLtMatrixLayout_t seq_batch_layout;  // [seq_len x d_model] batched
-    cublasLtMatrixLayout_t attn_batch_layout; // [seq_len x seq_len] batched
+    cublasLtMatrixLayout_t head_layout;       // [seq_len x head_dim] batched by B*H
+    cublasLtMatrixLayout_t attn_head_layout;  // [seq_len x seq_len] batched by B*H
     
     // Dimensions
     int seq_len;
     int d_model;
+    int num_heads;
+    int head_dim;
     int batch_size;
     float scale;
     bool is_causal;
 } Attention;
 
 // Function prototypes
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cublasLtHandle_t cublaslt_handle);
+Attention* init_attention(int seq_len, int d_model, int num_heads, int batch_size, bool is_causal, cublasLtHandle_t cublaslt_handle);
 void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, float* d_X);
 float calculate_loss_attention(Attention* attn, float* d_y);
