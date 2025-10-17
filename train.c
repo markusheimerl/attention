@@ -51,7 +51,7 @@ int main() {
             backward_pass_attention(attn, &X[batch_offset], NULL);
             
             // Update weights
-            update_weights_attention(attn, learning_rate);
+            update_weights_attention(attn, learning_rate, batch_size);
         }
         
         epoch_loss /= num_batches;
