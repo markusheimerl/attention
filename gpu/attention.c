@@ -490,7 +490,7 @@ __global__ static void adamw_update_kernel_attention(float* weight, float* grad,
 }
 
 // Update weights using AdamW
-void update_weights_attention(Attention* attn, float learning_rate) {
+void update_weights_attention(Attention* attn, float learning_rate, int effective_batch_size) {
     attn->t++;
     
     float beta1_t = powf(attn->beta1, attn->t);
@@ -511,7 +511,7 @@ void update_weights_attention(Attention* attn, float learning_rate) {
         adamw_update_kernel_attention<<<num_blocks, block_size>>>(
             weights[w], grads[w], m_arrays[w], v_arrays[w],
             attn->beta1, attn->beta2, attn->epsilon, learning_rate, attn->weight_decay,
-            alpha_t, weight_size, attn->batch_size
+            alpha_t, weight_size, effective_batch_size
         );
     }
 }
