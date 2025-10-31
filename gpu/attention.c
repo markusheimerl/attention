@@ -532,8 +532,6 @@ void reset_optimizer_attention(Attention* attn) {
     
     // Reset time step
     attn->t = 0;
-    
-    printf("Optimizer state reset\n");
 }
 
 // Save attention weights to binary file
