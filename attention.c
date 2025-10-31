@@ -480,6 +480,26 @@ void update_weights_attention(Attention* attn, float learning_rate, int effectiv
     }
 }
 
+// Reset optimizer state
+void reset_optimizer_attention(Attention* attn) {
+    int weight_size = attn->d_model * attn->d_model;
+    
+    // Reset Adam moment estimates to zero
+    memset(attn->W_q_m, 0, weight_size * sizeof(float));
+    memset(attn->W_q_v, 0, weight_size * sizeof(float));
+    memset(attn->W_k_m, 0, weight_size * sizeof(float));
+    memset(attn->W_k_v, 0, weight_size * sizeof(float));
+    memset(attn->W_v_m, 0, weight_size * sizeof(float));
+    memset(attn->W_v_v, 0, weight_size * sizeof(float));
+    memset(attn->W_o_m, 0, weight_size * sizeof(float));
+    memset(attn->W_o_v, 0, weight_size * sizeof(float));
+    
+    // Reset time step
+    attn->t = 0;
+    
+    printf("Optimizer state reset\n");
+}
+
 // Save attention weights to binary file
 void save_attention(Attention* attn, const char* filename) {
     FILE* file = fopen(filename, "wb");
