@@ -52,11 +52,11 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     attn->attn_output = (float*)malloc(seq_batch_size * sizeof(float));
     attn->output = (float*)malloc(seq_batch_size * sizeof(float));
     
-    // Allocate backward pass buffers
+    // Alias/Allocate backward pass buffers
     attn->grad_output = (float*)malloc(seq_batch_size * sizeof(float));
     attn->grad_attn_output = (float*)malloc(seq_batch_size * sizeof(float));
     attn->grad_weights = (float*)malloc(attn_matrix_size * sizeof(float));
-    attn->grad_scores = (float*)malloc(attn_matrix_size * sizeof(float));
+    attn->grad_scores = attn->scores;
     attn->grad_Q = (float*)malloc(seq_batch_size * sizeof(float));
     attn->grad_K = (float*)malloc(seq_batch_size * sizeof(float));
     attn->grad_V = (float*)malloc(seq_batch_size * sizeof(float));
@@ -84,7 +84,7 @@ void free_attention(Attention* attn) {
     free(attn->scores); free(attn->attn_weights);
     free(attn->attn_output); free(attn->output);
     free(attn->grad_output); free(attn->grad_attn_output); free(attn->grad_weights);
-    free(attn->grad_scores); free(attn->grad_Q); free(attn->grad_K); free(attn->grad_V);
+    free(attn->grad_Q); free(attn->grad_K); free(attn->grad_V);
     free(attn);
 }
 
