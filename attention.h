@@ -56,10 +56,11 @@ typedef struct {
     int batch_size;
     float scale;
     bool is_causal;
+    bool use_rope;
 } Attention;
 
 // Function prototypes
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal);
+Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, bool use_rope);
 void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, float* X);
 float calculate_loss_attention(Attention* attn, float* y);
