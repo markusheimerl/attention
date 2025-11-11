@@ -1,7 +1,7 @@
 #include "attention.h"
 
 // Initialize the attention layer
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, cublasLtHandle_t cublaslt_handle) {
+Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, bool use_rope, cublasLtHandle_t cublaslt_handle) {
     Attention* attn = (Attention*)malloc(sizeof(Attention));
     
     // Store dimensions
@@ -10,6 +10,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     attn->batch_size = batch_size;
     attn->scale = 1.0f / sqrtf(d_model);
     attn->is_causal = is_causal;
+    attn->use_rope = use_rope;
     
     // Initialize Adam parameters
     attn->beta1 = 0.9f;
@@ -282,6 +283,68 @@ __global__ static void softmax_causal_backward_kernel_attention(float* grad_scor
     }
 }
 
+// CUDA kernel for RoPE forward pass
+__global__ static void rope_forward_kernel_attention(float* Q, float* K, int batch_size, int seq_len, int d_model) {
+    int b = blockIdx.x;
+    int t = blockIdx.y;
+    int d_pair = threadIdx.x;
+    
+    if (b >= batch_size || t >= seq_len || d_pair >= d_model / 2) return;
+    
+    int d = d_pair * 2;
+    
+    // Compute rotation angle
+    float theta = powf(10000.0f, -((float)d / (float)d_model));
+    float angle = (float)t * theta;
+    float cos_a = cosf(angle);
+    float sin_a = sinf(angle);
+    
+    int idx = b * seq_len * d_model + t * d_model + d;
+    
+    // Rotate Q
+    float q0 = Q[idx];
+    float q1 = Q[idx + 1];
+    Q[idx] = q0 * cos_a - q1 * sin_a;
+    Q[idx + 1] = q0 * sin_a + q1 * cos_a;
+    
+    // Rotate K
+    float k0 = K[idx];
+    float k1 = K[idx + 1];
+    K[idx] = k0 * cos_a - k1 * sin_a;
+    K[idx + 1] = k0 * sin_a + k1 * cos_a;
+}
+
+// CUDA kernel for RoPE backward pass
+__global__ static void rope_backward_kernel_attention(float* grad_Q, float* grad_K, int batch_size, int seq_len, int d_model) {
+    int b = blockIdx.x;
+    int t = blockIdx.y;
+    int d_pair = threadIdx.x;
+    
+    if (b >= batch_size || t >= seq_len || d_pair >= d_model / 2) return;
+    
+    int d = d_pair * 2;
+    
+    // Compute rotation angle
+    float theta = powf(10000.0f, -((float)d / (float)d_model));
+    float angle = (float)t * theta;
+    float cos_a = cosf(angle);
+    float sin_a = sinf(angle);
+    
+    int idx = b * seq_len * d_model + t * d_model + d;
+    
+    // Inverse rotate grad_Q
+    float gq0 = grad_Q[idx];
+    float gq1 = grad_Q[idx + 1];
+    grad_Q[idx] = gq0 * cos_a + gq1 * sin_a;
+    grad_Q[idx + 1] = -gq0 * sin_a + gq1 * cos_a;
+    
+    // Inverse rotate grad_K
+    float gk0 = grad_K[idx];
+    float gk1 = grad_K[idx + 1];
+    grad_K[idx] = gk0 * cos_a + gk1 * sin_a;
+    grad_K[idx + 1] = -gk0 * sin_a + gk1 * cos_a;
+}
+
 // Forward pass
 void forward_pass_attention(Attention* attn, float* d_X) {
     const float alpha = 1.0f;
@@ -306,14 +369,20 @@ void forward_pass_attention(Attention* attn, float* d_X) {
               attn->d_W_v, attn->weight_layout,
               &beta, attn->d_V, attn->seq_flat_layout);
     
-    // Step 2: Compute attention scores (batched: [L x D] * [D x L] -> [L x L])
+    // Step 2: Apply RoPE to Q and K
+    if (attn->use_rope) {
+        dim3 grid(attn->batch_size, attn->seq_len);
+        rope_forward_kernel_attention<<<grid, attn->d_model / 2>>>(attn->d_Q, attn->d_K, attn->batch_size, attn->seq_len, attn->d_model);
+    }
+    
+    // Step 3: Compute attention scores (batched: [L x D] * [D x L] -> [L x L])
     // S = QKᵀ/√d_model
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &attn->scale,
               attn->d_Q, attn->seq_batch_layout,
               attn->d_K, attn->seq_batch_layout,
               &beta, attn->d_scores, attn->attn_batch_layout);
     
-    // Step 3: Apply softmax
+    // Step 4: Apply softmax
     dim3 grid(attn->batch_size, attn->seq_len);
     if (attn->is_causal) {
         softmax_causal_forward_kernel_attention<<<grid, 1>>>(attn->d_attn_weights, attn->d_scores, attn->batch_size, attn->seq_len);
@@ -321,14 +390,14 @@ void forward_pass_attention(Attention* attn, float* d_X) {
         softmax_forward_kernel_attention<<<grid, 1>>>(attn->d_attn_weights, attn->d_scores, attn->batch_size, attn->seq_len);
     }
     
-    // Step 4: Compute attention output (batched: [L x L] * [L x D] -> [L x D])
+    // Step 5: Compute attention output (batched: [L x L] * [L x D] -> [L x D])
     // Z = AV
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &alpha,
               attn->d_attn_weights, attn->attn_batch_layout,
               attn->d_V, attn->seq_batch_layout,
               &beta, attn->d_attn_output, attn->seq_batch_layout);
     
-    // Step 5: Apply output projection (flattened: [B * L x D] * [D x D] -> [B * L x D])
+    // Step 6: Apply output projection (flattened: [B * L x D] * [D x D] -> [B * L x D])
     // Y = ZW_o
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &alpha,
               attn->d_attn_output, attn->seq_flat_layout,
@@ -382,7 +451,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
     
-    // Step 5 (backward): Gradient through output projection
+    // Step 6 (backward): Gradient through output projection
     // ∂L/∂W_o = Zᵀ(∂L/∂Y) (flattened)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
               attn->d_attn_output, attn->seq_flat_layout,
@@ -395,7 +464,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
               attn->d_W_o, attn->weight_layout,
               &beta, attn->d_grad_attn_output, attn->seq_flat_layout);
     
-    // Step 4 (backward): Gradient through attention output computation
+    // Step 5 (backward): Gradient through attention output computation
     // ∂L/∂A = (∂L/∂Z)Vᵀ (batched)
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
               attn->d_grad_attn_output, attn->seq_batch_layout,
@@ -408,7 +477,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
               attn->d_grad_attn_output, attn->seq_batch_layout,
               &beta, attn->d_grad_V, attn->seq_batch_layout);
     
-    // Step 3 (backward): Gradient through softmax
+    // Step 4 (backward): Gradient through softmax
     dim3 grid(attn->batch_size, attn->seq_len);
     if (attn->is_causal) {
         softmax_causal_backward_kernel_attention<<<grid, 1>>>(attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->seq_len);
@@ -416,7 +485,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
         softmax_backward_kernel_attention<<<grid, 1>>>(attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->seq_len);
     }
     
-    // Step 2 (backward): Gradient through attention scores
+    // Step 3 (backward): Gradient through attention scores
     // ∂L/∂Q = (∂L/∂S)K/√d_model (batched)
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &attn->scale,
               attn->d_grad_scores, attn->attn_batch_layout,
@@ -428,6 +497,12 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
               attn->d_grad_scores, attn->attn_batch_layout,
               attn->d_Q, attn->seq_batch_layout,
               &beta, attn->d_grad_K, attn->seq_batch_layout);
+    
+    // Step 2 (backward): Apply inverse RoPE to grad_Q and grad_K
+    if (attn->use_rope) {
+        dim3 grid_rope(attn->batch_size, attn->seq_len);
+        rope_backward_kernel_attention<<<grid_rope, attn->d_model / 2>>>(attn->d_grad_Q, attn->d_grad_K, attn->batch_size, attn->seq_len, attn->d_model);
+    }
     
     // Step 1 (backward): Gradient through linear projections
     // ∂L/∂W_q = Xᵀ(∂L/∂Q) (flattened)
@@ -547,6 +622,7 @@ void save_attention(Attention* attn, const char* filename) {
     fwrite(&attn->d_model, sizeof(int), 1, file);
     fwrite(&attn->batch_size, sizeof(int), 1, file);
     fwrite(&attn->is_causal, sizeof(bool), 1, file);
+    fwrite(&attn->use_rope, sizeof(bool), 1, file);
     
     int weight_size = attn->d_model * attn->d_model;
     
@@ -616,16 +692,17 @@ Attention* load_attention(const char* filename, int custom_batch_size, cublasLtH
     
     // Read dimensions
     int seq_len, d_model, stored_batch_size;
-    bool is_causal;
+    bool is_causal, use_rope;
     fread(&seq_len, sizeof(int), 1, file);
     fread(&d_model, sizeof(int), 1, file);
     fread(&stored_batch_size, sizeof(int), 1, file);
     fread(&is_causal, sizeof(bool), 1, file);
+    fread(&use_rope, sizeof(bool), 1, file);
     
     // Use custom_batch_size if provided, otherwise use stored value
     int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
-    Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, cublaslt_handle);
+    Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, use_rope, cublaslt_handle);
     
     int weight_size = d_model * d_model;
     
