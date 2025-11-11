@@ -68,15 +68,22 @@ int main() {
     strftime(model_fname, sizeof(model_fname), "%Y%m%d_%H%M%S_attention.bin", localtime(&now));
     strftime(data_fname, sizeof(data_fname), "%Y%m%d_%H%M%S_attention_data.csv", localtime(&now));
 
-    // Save model and data with timestamped filenames
-    save_attention(attn, model_fname);
+    // Save model
+    FILE* model_file = fopen(model_fname, "wb");
+    serialize_attention(attn, model_file);
+    fclose(model_file);
+    printf("Model saved to %s\n", model_fname);
+    
+    // Save data
     save_data(X, y, seq_len, num_samples, d_model, data_fname);
     
     // Load the model back and verify
     printf("\nVerifying saved model...\n");
 
-    // Load the model back with original batch_size
-    Attention* loaded_attn = load_attention(model_fname, batch_size);
+    model_file = fopen(model_fname, "rb");
+    Attention* loaded_attn = deserialize_attention(model_file, batch_size);
+    fclose(model_file);
+    printf("Model loaded from %s\n", model_fname);
 
     // Forward pass with loaded model on first batch
     forward_pass_attention(loaded_attn, X);
