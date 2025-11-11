@@ -283,8 +283,8 @@ __global__ static void softmax_causal_backward_kernel_attention(float* grad_scor
     }
 }
 
-// RoPE forward kernel - applies rotary position embeddings
-__global__ static void rope_forward_kernel(float* Q, float* K, int batch_size, int seq_len, int d_model) {
+// CUDA kernel for RoPE forward pass
+__global__ static void rope_forward_kernel_attention(float* Q, float* K, int batch_size, int seq_len, int d_model) {
     int b = blockIdx.x;
     int t = blockIdx.y;
     int d_pair = threadIdx.x;
@@ -314,8 +314,8 @@ __global__ static void rope_forward_kernel(float* Q, float* K, int batch_size, i
     K[idx + 1] = k0 * sin_a + k1 * cos_a;
 }
 
-// RoPE backward kernel - applies inverse rotation to gradients
-__global__ static void rope_backward_kernel(float* grad_Q, float* grad_K, int batch_size, int seq_len, int d_model) {
+// CUDA kernel for RoPE backward pass
+__global__ static void rope_backward_kernel_attention(float* grad_Q, float* grad_K, int batch_size, int seq_len, int d_model) {
     int b = blockIdx.x;
     int t = blockIdx.y;
     int d_pair = threadIdx.x;
@@ -369,20 +369,20 @@ void forward_pass_attention(Attention* attn, float* d_X) {
               attn->d_W_v, attn->weight_layout,
               &beta, attn->d_V, attn->seq_flat_layout);
     
-    // Step 1.5: Apply RoPE to Q and K
+    // Step 2: Apply RoPE to Q and K
     if (attn->use_rope) {
         dim3 grid(attn->batch_size, attn->seq_len);
-        rope_forward_kernel<<<grid, attn->d_model / 2>>>(attn->d_Q, attn->d_K, attn->batch_size, attn->seq_len, attn->d_model);
+        rope_forward_kernel_attention<<<grid, attn->d_model / 2>>>(attn->d_Q, attn->d_K, attn->batch_size, attn->seq_len, attn->d_model);
     }
     
-    // Step 2: Compute attention scores (batched: [L x D] * [D x L] -> [L x L])
+    // Step 3: Compute attention scores (batched: [L x D] * [D x L] -> [L x L])
     // S = QKᵀ/√d_model
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &attn->scale,
               attn->d_Q, attn->seq_batch_layout,
               attn->d_K, attn->seq_batch_layout,
               &beta, attn->d_scores, attn->attn_batch_layout);
     
-    // Step 3: Apply softmax
+    // Step 4: Apply softmax
     dim3 grid(attn->batch_size, attn->seq_len);
     if (attn->is_causal) {
         softmax_causal_forward_kernel_attention<<<grid, 1>>>(attn->d_attn_weights, attn->d_scores, attn->batch_size, attn->seq_len);
@@ -390,14 +390,14 @@ void forward_pass_attention(Attention* attn, float* d_X) {
         softmax_forward_kernel_attention<<<grid, 1>>>(attn->d_attn_weights, attn->d_scores, attn->batch_size, attn->seq_len);
     }
     
-    // Step 4: Compute attention output (batched: [L x L] * [L x D] -> [L x D])
+    // Step 5: Compute attention output (batched: [L x L] * [L x D] -> [L x D])
     // Z = AV
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &alpha,
               attn->d_attn_weights, attn->attn_batch_layout,
               attn->d_V, attn->seq_batch_layout,
               &beta, attn->d_attn_output, attn->seq_batch_layout);
     
-    // Step 5: Apply output projection (flattened: [B * L x D] * [D x D] -> [B * L x D])
+    // Step 6: Apply output projection (flattened: [B * L x D] * [D x D] -> [B * L x D])
     // Y = ZW_o
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &alpha,
               attn->d_attn_output, attn->seq_flat_layout,
@@ -451,7 +451,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
     
-    // Step 5 (backward): Gradient through output projection
+    // Step 6 (backward): Gradient through output projection
     // ∂L/∂W_o = Zᵀ(∂L/∂Y) (flattened)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
               attn->d_attn_output, attn->seq_flat_layout,
@@ -464,7 +464,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
               attn->d_W_o, attn->weight_layout,
               &beta, attn->d_grad_attn_output, attn->seq_flat_layout);
     
-    // Step 4 (backward): Gradient through attention output computation
+    // Step 5 (backward): Gradient through attention output computation
     // ∂L/∂A = (∂L/∂Z)Vᵀ (batched)
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
               attn->d_grad_attn_output, attn->seq_batch_layout,
@@ -477,7 +477,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
               attn->d_grad_attn_output, attn->seq_batch_layout,
               &beta, attn->d_grad_V, attn->seq_batch_layout);
     
-    // Step 3 (backward): Gradient through softmax
+    // Step 4 (backward): Gradient through softmax
     dim3 grid(attn->batch_size, attn->seq_len);
     if (attn->is_causal) {
         softmax_causal_backward_kernel_attention<<<grid, 1>>>(attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->seq_len);
@@ -485,7 +485,7 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
         softmax_backward_kernel_attention<<<grid, 1>>>(attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->seq_len);
     }
     
-    // Step 2 (backward): Gradient through attention scores
+    // Step 3 (backward): Gradient through attention scores
     // ∂L/∂Q = (∂L/∂S)K/√d_model (batched)
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &attn->scale,
               attn->d_grad_scores, attn->attn_batch_layout,
@@ -498,10 +498,10 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
               attn->d_Q, attn->seq_batch_layout,
               &beta, attn->d_grad_K, attn->seq_batch_layout);
     
-    // Step 1.5 (backward): Apply inverse RoPE to grad_Q and grad_K
+    // Step 2 (backward): Apply inverse RoPE to grad_Q and grad_K
     if (attn->use_rope) {
         dim3 grid_rope(attn->batch_size, attn->seq_len);
-        rope_backward_kernel<<<grid_rope, attn->d_model / 2>>>(attn->d_grad_Q, attn->d_grad_K, attn->batch_size, attn->seq_len, attn->d_model);
+        rope_backward_kernel_attention<<<grid_rope, attn->d_model / 2>>>(attn->d_grad_Q, attn->d_grad_K, attn->batch_size, attn->seq_len, attn->d_model);
     }
     
     // Step 1 (backward): Gradient through linear projections

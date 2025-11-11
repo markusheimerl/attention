@@ -205,7 +205,7 @@ static void softmax_causal_backward_attention(float* grad_scores, float* grad_we
     }
 }
 
-// RoPE forward - applies rotary position embeddings
+// RoPE forward pass
 static void rope_forward_attention(float* Q, float* K, int batch_size, int seq_len, int d_model) {
     for (int b = 0; b < batch_size; b++) {
         for (int t = 0; t < seq_len; t++) {
@@ -236,7 +236,7 @@ static void rope_forward_attention(float* Q, float* K, int batch_size, int seq_l
     }
 }
 
-// RoPE backward - applies inverse rotation to gradients
+// RoPE backward pass
 static void rope_backward_attention(float* grad_Q, float* grad_K, int batch_size, int seq_len, int d_model) {
     for (int b = 0; b < batch_size; b++) {
         for (int t = 0; t < seq_len; t++) {
@@ -299,12 +299,12 @@ void forward_pass_attention(Attention* attn, float* X) {
                     0.0f, V_b, attn->d_model);
     }
     
-    // Step 1.5: Apply RoPE to Q and K
+    // Step 2: Apply RoPE to Q and K
     if (attn->use_rope) {
         rope_forward_attention(attn->Q, attn->K, attn->batch_size, attn->seq_len, attn->d_model);
     }
     
-    // Step 2: Compute attention scores
+    // Step 3: Compute attention scores
     // S = QKᵀ/√d_model
     for (int b = 0; b < attn->batch_size; b++) {
         float* Q_b = &attn->Q[b * attn->seq_len * attn->d_model];
@@ -319,14 +319,14 @@ void forward_pass_attention(Attention* attn, float* X) {
                     0.0f, scores_b, attn->seq_len);
     }
     
-    // Step 3: Apply softmax row-wise
+    // Step 4: Apply softmax row-wise
     if (attn->is_causal) {
         softmax_causal_forward_attention(attn->attn_weights, attn->scores, attn->batch_size, attn->seq_len);
     } else {
         softmax_forward_attention(attn->attn_weights, attn->scores, attn->batch_size, attn->seq_len);
     }
     
-    // Step 4: Compute attention output
+    // Step 5: Compute attention output
     // Z = AV
     for (int b = 0; b < attn->batch_size; b++) {
         float* weights_b = &attn->attn_weights[b * attn->seq_len * attn->seq_len];
@@ -341,7 +341,7 @@ void forward_pass_attention(Attention* attn, float* X) {
                     0.0f, attn_output_b, attn->d_model);
     }
     
-    // Step 5: Apply output projection
+    // Step 6: Apply output projection
     // Y = ZW_o
     for (int b = 0; b < attn->batch_size; b++) {
         float* attn_output_b = &attn->attn_output[b * attn->seq_len * attn->d_model];
@@ -381,7 +381,7 @@ void zero_gradients_attention(Attention* attn) {
 
 // Backward pass
 void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
-    // Step 5 (backward): Gradient through output projection
+    // Step 6 (backward): Gradient through output projection
     // ∂L/∂W_o = Zᵀ(∂L/∂Y), ∂L/∂Z = (∂L/∂Y)W_oᵀ
     for (int b = 0; b < attn->batch_size; b++) {
         float* grad_output_b = &attn->grad_output[b * attn->seq_len * attn->d_model];
@@ -403,7 +403,7 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
                     0.0f, grad_attn_output_b, attn->d_model);
     }
     
-    // Step 4 (backward): Gradient through attention output computation
+    // Step 5 (backward): Gradient through attention output computation
     // ∂L/∂A = (∂L/∂Z)Vᵀ, ∂L/∂V = Aᵀ(∂L/∂Z)
     for (int b = 0; b < attn->batch_size; b++) {
         float* grad_attn_output_b = &attn->grad_attn_output[b * attn->seq_len * attn->d_model];
@@ -427,14 +427,14 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
                     0.0f, grad_V_b, attn->d_model);
     }
     
-    // Step 3 (backward): Gradient through softmax
+    // Step 4 (backward): Gradient through softmax
     if (attn->is_causal) {
         softmax_causal_backward_attention(attn->grad_scores, attn->grad_weights, attn->attn_weights, attn->batch_size, attn->seq_len);
     } else {
         softmax_backward_attention(attn->grad_scores, attn->grad_weights, attn->attn_weights, attn->batch_size, attn->seq_len);
     }
     
-    // Step 2 (backward): Gradient through attention scores
+    // Step 3 (backward): Gradient through attention scores
     // ∂L/∂Q = (∂L/∂S)K/√d_model, ∂L/∂K = (∂L/∂S)ᵀQ/√d_model
     for (int b = 0; b < attn->batch_size; b++) {
         float* grad_scores_b = &attn->grad_scores[b * attn->seq_len * attn->seq_len];
@@ -458,7 +458,7 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
                     0.0f, grad_K_b, attn->d_model);
     }
     
-    // Step 1.5 (backward): Apply inverse RoPE to grad_Q and grad_K
+    // Step 2 (backward): Apply inverse RoPE to grad_Q and grad_K
     if (attn->use_rope) {
         rope_backward_attention(attn->grad_Q, attn->grad_K, attn->batch_size, attn->seq_len, attn->d_model);
     }
