@@ -73,13 +73,13 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     CHECK_CUDA(cudaMalloc(&attn->d_output, seq_batch_size * sizeof(float)));
     
     // Alias/Allocate device memory for backward pass buffers
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_output, seq_batch_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_attn_output, seq_batch_size * sizeof(float)));
+    attn->d_grad_output = attn->d_output;
+    attn->d_grad_attn_output = attn->d_attn_output;
     CHECK_CUDA(cudaMalloc(&attn->d_grad_weights, attn_matrix_size * sizeof(float)));
     attn->d_grad_scores = attn->d_scores;
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_Q, seq_batch_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_K, seq_batch_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_grad_V, seq_batch_size * sizeof(float)));
+    attn->d_grad_Q = attn->d_attn_output;
+    attn->d_grad_K = attn->d_K;
+    attn->d_grad_V = attn->d_V;
     
     // Allocate single device float for loss computation
     CHECK_CUDA(cudaMalloc(&attn->d_loss_result, sizeof(float)));
