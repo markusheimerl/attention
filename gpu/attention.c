@@ -609,43 +609,40 @@ void reset_optimizer_attention(Attention* attn) {
     attn->t = 0;
 }
 
-// Save attention weights to binary file
-void save_attention(Attention* attn, const char* filename) {
-    FILE* file = fopen(filename, "wb");
-    if (!file) {
-        printf("Error opening file for writing: %s\n", filename);
-        return;
-    }
-    
-    // Save dimensions
+// Serialize attention to file
+void serialize_attention(Attention* attn, FILE* file) {
+    // Write dimensions
     fwrite(&attn->seq_len, sizeof(int), 1, file);
     fwrite(&attn->d_model, sizeof(int), 1, file);
-    fwrite(&attn->batch_size, sizeof(int), 1, file);
     fwrite(&attn->is_causal, sizeof(bool), 1, file);
     fwrite(&attn->use_rope, sizeof(bool), 1, file);
     
     int weight_size = attn->d_model * attn->d_model;
     
-    // Allocate temporary host memory for weights
+    // Allocate host buffers for weights
     float* h_W_q = (float*)malloc(weight_size * sizeof(float));
     float* h_W_k = (float*)malloc(weight_size * sizeof(float));
     float* h_W_v = (float*)malloc(weight_size * sizeof(float));
     float* h_W_o = (float*)malloc(weight_size * sizeof(float));
     
-    // Copy weights from device to host
+    // Copy weights from device
     CHECK_CUDA(cudaMemcpy(h_W_q, attn->d_W_q, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
     CHECK_CUDA(cudaMemcpy(h_W_k, attn->d_W_k, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
     CHECK_CUDA(cudaMemcpy(h_W_v, attn->d_W_v, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
     CHECK_CUDA(cudaMemcpy(h_W_o, attn->d_W_o, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
     
+    // Write weights
     fwrite(h_W_q, sizeof(float), weight_size, file);
     fwrite(h_W_k, sizeof(float), weight_size, file);
     fwrite(h_W_v, sizeof(float), weight_size, file);
     fwrite(h_W_o, sizeof(float), weight_size, file);
     
-    // Save Adam state
+    free(h_W_q); free(h_W_k); free(h_W_v); free(h_W_o);
+    
+    // Write optimizer state
     fwrite(&attn->t, sizeof(int), 1, file);
     
+    // Allocate host buffers for optimizer state
     float* h_W_q_m = (float*)malloc(weight_size * sizeof(float));
     float* h_W_q_v = (float*)malloc(weight_size * sizeof(float));
     float* h_W_k_m = (float*)malloc(weight_size * sizeof(float));
@@ -655,6 +652,7 @@ void save_attention(Attention* attn, const char* filename) {
     float* h_W_o_m = (float*)malloc(weight_size * sizeof(float));
     float* h_W_o_v = (float*)malloc(weight_size * sizeof(float));
     
+    // Copy optimizer state from device
     CHECK_CUDA(cudaMemcpy(h_W_q_m, attn->d_W_q_m, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
     CHECK_CUDA(cudaMemcpy(h_W_q_v, attn->d_W_q_v, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
     CHECK_CUDA(cudaMemcpy(h_W_k_m, attn->d_W_k_m, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
@@ -664,6 +662,7 @@ void save_attention(Attention* attn, const char* filename) {
     CHECK_CUDA(cudaMemcpy(h_W_o_m, attn->d_W_o_m, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
     CHECK_CUDA(cudaMemcpy(h_W_o_v, attn->d_W_o_v, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
     
+    // Write optimizer state
     fwrite(h_W_q_m, sizeof(float), weight_size, file);
     fwrite(h_W_q_v, sizeof(float), weight_size, file);
     fwrite(h_W_k_m, sizeof(float), weight_size, file);
@@ -673,58 +672,50 @@ void save_attention(Attention* attn, const char* filename) {
     fwrite(h_W_o_m, sizeof(float), weight_size, file);
     fwrite(h_W_o_v, sizeof(float), weight_size, file);
     
-    // Free temporary host memory
-    free(h_W_q); free(h_W_k); free(h_W_v); free(h_W_o);
+    // Free host buffers
     free(h_W_q_m); free(h_W_q_v); free(h_W_k_m); free(h_W_k_v);
     free(h_W_v_m); free(h_W_v_v); free(h_W_o_m); free(h_W_o_v);
-
-    fclose(file);
-    printf("Model saved to %s\n", filename);
 }
 
-// Load attention weights from binary file
-Attention* load_attention(const char* filename, int custom_batch_size, cublasLtHandle_t cublaslt_handle) {
-    FILE* file = fopen(filename, "rb");
-    if (!file) {
-        printf("Error opening file for reading: %s\n", filename);
-        return NULL;
-    }
-    
+// Deserialize attention from file
+Attention* deserialize_attention(FILE* file, int batch_size, cublasLtHandle_t cublaslt_handle) {
     // Read dimensions
-    int seq_len, d_model, stored_batch_size;
+    int seq_len, d_model;
     bool is_causal, use_rope;
     fread(&seq_len, sizeof(int), 1, file);
     fread(&d_model, sizeof(int), 1, file);
-    fread(&stored_batch_size, sizeof(int), 1, file);
     fread(&is_causal, sizeof(bool), 1, file);
     fread(&use_rope, sizeof(bool), 1, file);
     
-    // Use custom_batch_size if provided, otherwise use stored value
-    int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
-    
+    // Initialize attention
     Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, use_rope, cublaslt_handle);
     
     int weight_size = d_model * d_model;
     
-    // Load weights
+    // Allocate host buffers for weights
     float* h_W_q = (float*)malloc(weight_size * sizeof(float));
     float* h_W_k = (float*)malloc(weight_size * sizeof(float));
     float* h_W_v = (float*)malloc(weight_size * sizeof(float));
     float* h_W_o = (float*)malloc(weight_size * sizeof(float));
     
+    // Read weights
     fread(h_W_q, sizeof(float), weight_size, file);
     fread(h_W_k, sizeof(float), weight_size, file);
     fread(h_W_v, sizeof(float), weight_size, file);
     fread(h_W_o, sizeof(float), weight_size, file);
     
+    // Copy weights to device
     CHECK_CUDA(cudaMemcpy(attn->d_W_q, h_W_q, weight_size * sizeof(float), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(attn->d_W_k, h_W_k, weight_size * sizeof(float), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(attn->d_W_v, h_W_v, weight_size * sizeof(float), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(attn->d_W_o, h_W_o, weight_size * sizeof(float), cudaMemcpyHostToDevice));
     
-    // Load Adam state
+    free(h_W_q); free(h_W_k); free(h_W_v); free(h_W_o);
+    
+    // Read optimizer state
     fread(&attn->t, sizeof(int), 1, file);
     
+    // Allocate host buffers for optimizer state
     float* h_W_q_m = (float*)malloc(weight_size * sizeof(float));
     float* h_W_q_v = (float*)malloc(weight_size * sizeof(float));
     float* h_W_k_m = (float*)malloc(weight_size * sizeof(float));
@@ -734,6 +725,7 @@ Attention* load_attention(const char* filename, int custom_batch_size, cublasLtH
     float* h_W_o_m = (float*)malloc(weight_size * sizeof(float));
     float* h_W_o_v = (float*)malloc(weight_size * sizeof(float));
     
+    // Read optimizer state
     fread(h_W_q_m, sizeof(float), weight_size, file);
     fread(h_W_q_v, sizeof(float), weight_size, file);
     fread(h_W_k_m, sizeof(float), weight_size, file);
@@ -743,6 +735,7 @@ Attention* load_attention(const char* filename, int custom_batch_size, cublasLtH
     fread(h_W_o_m, sizeof(float), weight_size, file);
     fread(h_W_o_v, sizeof(float), weight_size, file);
     
+    // Copy optimizer state to device
     CHECK_CUDA(cudaMemcpy(attn->d_W_q_m, h_W_q_m, weight_size * sizeof(float), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(attn->d_W_q_v, h_W_q_v, weight_size * sizeof(float), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(attn->d_W_k_m, h_W_k_m, weight_size * sizeof(float), cudaMemcpyHostToDevice));
@@ -752,12 +745,9 @@ Attention* load_attention(const char* filename, int custom_batch_size, cublasLtH
     CHECK_CUDA(cudaMemcpy(attn->d_W_o_m, h_W_o_m, weight_size * sizeof(float), cudaMemcpyHostToDevice));
     CHECK_CUDA(cudaMemcpy(attn->d_W_o_v, h_W_o_v, weight_size * sizeof(float), cudaMemcpyHostToDevice));
     
-    free(h_W_q); free(h_W_k); free(h_W_v); free(h_W_o);
+    // Free host buffers
     free(h_W_q_m); free(h_W_q_v); free(h_W_k_m); free(h_W_k_v);
     free(h_W_v_m); free(h_W_v_v); free(h_W_o_m); free(h_W_o_v);
-    
-    fclose(file);
-    printf("Model loaded from %s\n", filename);
     
     return attn;
 }

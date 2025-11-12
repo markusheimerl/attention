@@ -571,30 +571,23 @@ void reset_optimizer_attention(Attention* attn) {
     attn->t = 0;
 }
 
-// Save attention weights to binary file
-void save_attention(Attention* attn, const char* filename) {
-    FILE* file = fopen(filename, "wb");
-    if (!file) {
-        printf("Error opening file for writing: %s\n", filename);
-        return;
-    }
-    
-    // Save dimensions
+// Serialize attention to a file
+void serialize_attention(Attention* attn, FILE* file) {
+    // Write dimensions
     fwrite(&attn->seq_len, sizeof(int), 1, file);
     fwrite(&attn->d_model, sizeof(int), 1, file);
-    fwrite(&attn->batch_size, sizeof(int), 1, file);
     fwrite(&attn->is_causal, sizeof(bool), 1, file);
     fwrite(&attn->use_rope, sizeof(bool), 1, file);
     
     int weight_size = attn->d_model * attn->d_model;
     
-    // Save weights
+    // Write weights
     fwrite(attn->W_q, sizeof(float), weight_size, file);
     fwrite(attn->W_k, sizeof(float), weight_size, file);
     fwrite(attn->W_v, sizeof(float), weight_size, file);
     fwrite(attn->W_o, sizeof(float), weight_size, file);
     
-    // Save Adam state
+    // Write optimizer state
     fwrite(&attn->t, sizeof(int), 1, file);
     fwrite(attn->W_q_m, sizeof(float), weight_size, file);
     fwrite(attn->W_q_v, sizeof(float), weight_size, file);
@@ -604,43 +597,30 @@ void save_attention(Attention* attn, const char* filename) {
     fwrite(attn->W_v_v, sizeof(float), weight_size, file);
     fwrite(attn->W_o_m, sizeof(float), weight_size, file);
     fwrite(attn->W_o_v, sizeof(float), weight_size, file);
-
-    fclose(file);
-    printf("Model saved to %s\n", filename);
 }
 
-// Load attention weights from binary file
-Attention* load_attention(const char* filename, int custom_batch_size) {
-    FILE* file = fopen(filename, "rb");
-    if (!file) {
-        printf("Error opening file for reading: %s\n", filename);
-        return NULL;
-    }
-    
+// Deserialize attention from a file
+Attention* deserialize_attention(FILE* file, int batch_size) {
     // Read dimensions
-    int seq_len, d_model, stored_batch_size;
+    int seq_len, d_model;
     bool is_causal, use_rope;
     fread(&seq_len, sizeof(int), 1, file);
     fread(&d_model, sizeof(int), 1, file);
-    fread(&stored_batch_size, sizeof(int), 1, file);
     fread(&is_causal, sizeof(bool), 1, file);
     fread(&use_rope, sizeof(bool), 1, file);
-    
-    // Use custom_batch_size if provided, otherwise use stored value
-    int batch_size = (custom_batch_size > 0) ? custom_batch_size : stored_batch_size;
     
     // Initialize attention layer
     Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, use_rope);
     
     int weight_size = d_model * d_model;
     
-    // Load weights
+    // Read weights
     fread(attn->W_q, sizeof(float), weight_size, file);
     fread(attn->W_k, sizeof(float), weight_size, file);
     fread(attn->W_v, sizeof(float), weight_size, file);
     fread(attn->W_o, sizeof(float), weight_size, file);
     
-    // Load Adam state
+    // Read optimizer state
     fread(&attn->t, sizeof(int), 1, file);
     fread(attn->W_q_m, sizeof(float), weight_size, file);
     fread(attn->W_q_v, sizeof(float), weight_size, file);
@@ -650,9 +630,6 @@ Attention* load_attention(const char* filename, int custom_batch_size) {
     fread(attn->W_v_v, sizeof(float), weight_size, file);
     fread(attn->W_o_m, sizeof(float), weight_size, file);
     fread(attn->W_o_v, sizeof(float), weight_size, file);
-
-    fclose(file);
-    printf("Model loaded from %s\n", filename);
     
     return attn;
 }
