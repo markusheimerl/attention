@@ -122,6 +122,6 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X);
 void update_weights_attention(Attention* attn, float learning_rate, int effective_batch_size);
 void reset_optimizer_attention(Attention* attn);
 void serialize_attention(Attention* attn, FILE* file);
-Attention* deserialize_attention(FILE* file, int custom_batch_size, cublasLtHandle_t cublaslt_handle);
+Attention* deserialize_attention(FILE* file, int batch_size, cublasLtHandle_t cublaslt_handle);
 
 #endif
