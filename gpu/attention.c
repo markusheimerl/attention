@@ -54,14 +54,14 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     CHECK_CUDA(cudaMalloc(&attn->d_W_o_grad, weight_size * sizeof(float)));
     
     // Allocate device memory for Adam parameters
-    CHECK_CUDA(cudaMalloc(&attn->d_W_q_m, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_W_q_v, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_W_k_m, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_W_k_v, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_W_v_m, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_W_v_v, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_W_o_m, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&attn->d_W_o_v, weight_size * sizeof(float)));
+    CHECK_CUDA(cudaMalloc(&attn->d_W_q_m, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMalloc(&attn->d_W_q_v, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMalloc(&attn->d_W_k_m, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMalloc(&attn->d_W_k_v, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMalloc(&attn->d_W_v_m, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMalloc(&attn->d_W_v_v, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMalloc(&attn->d_W_o_m, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMalloc(&attn->d_W_o_v, weight_size * sizeof(__half)));
     
     // Allocate device memory for forward pass buffers
     CHECK_CUDA(cudaMalloc(&attn->d_Q, seq_batch_size * sizeof(float)));
@@ -91,14 +91,14 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     CHECK_CUDA(cudaMemcpy(attn->d_W_o, h_W_o, weight_size * sizeof(float), cudaMemcpyHostToDevice));
     
     // Initialize Adam parameters to zero
-    CHECK_CUDA(cudaMemset(attn->d_W_q_m, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_q_v, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_k_m, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_k_v, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_v_m, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_v_v, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_o_m, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_o_v, 0, weight_size * sizeof(float)));
+    CHECK_CUDA(cudaMemset(attn->d_W_q_m, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_q_v, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_k_m, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_k_v, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_v_m, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_v_v, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_o_m, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_o_v, 0, weight_size * sizeof(__half)));
     
     // Create cuBLASLt matrix multiplication descriptor
     CHECK_CUBLASLT(cublasLtMatmulDescCreate(&attn->matmul_desc, CUBLAS_COMPUTE_32F_FAST_TF32, CUDA_R_32F));
@@ -545,19 +545,27 @@ void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X) {
 }
 
 // CUDA kernel for AdamW update
-__global__ static void adamw_update_kernel_attention(float* weight, float* grad, float* m, float* v,
+__global__ static void adamw_update_kernel_attention(float* weight, float* grad, __half* m, __half* v,
                                              float beta1, float beta2, float epsilon, float learning_rate,
                                              float weight_decay, float alpha_t, int size, int batch_size) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < size) {
         float g = grad[idx] / batch_size;
         
-        // m = β₁m + (1-β₁)(∂L/∂W)
-        m[idx] = beta1 * m[idx] + (1.0f - beta1) * g;
-        // v = β₂v + (1-β₂)(∂L/∂W)²
-        v[idx] = beta2 * v[idx] + (1.0f - beta2) * g * g;
+        // Load and convert to FP32
+        float m_val = __half2float(m[idx]);
+        float v_val = __half2float(v[idx]);
         
-        float update = alpha_t * m[idx] / (sqrtf(v[idx]) + epsilon);
+        // m = β₁m + (1-β₁)(∂L/∂W)
+        m_val = beta1 * m_val + (1.0f - beta1) * g;
+        // v = β₂v + (1-β₂)(∂L/∂W)²
+        v_val = beta2 * v_val + (1.0f - beta2) * g * g;
+        
+        // Store back to FP16
+        m[idx] = __float2half(m_val);
+        v[idx] = __float2half(v_val);
+        
+        float update = alpha_t * m_val / (sqrtf(v_val) + epsilon);
         // W = (1-λη)W - η(m/(1-β₁ᵗ))/√(v/(1-β₂ᵗ) + ε)
         weight[idx] = weight[idx] * (1.0f - learning_rate * weight_decay) - update;
     }
@@ -578,8 +586,8 @@ void update_weights_attention(Attention* attn, float learning_rate, int effectiv
     // Update all weight matrices (W_q, W_k, W_v, W_o)
     float* weights[] = {attn->d_W_q, attn->d_W_k, attn->d_W_v, attn->d_W_o};
     float* grads[] = {attn->d_W_q_grad, attn->d_W_k_grad, attn->d_W_v_grad, attn->d_W_o_grad};
-    float* m_arrays[] = {attn->d_W_q_m, attn->d_W_k_m, attn->d_W_v_m, attn->d_W_o_m};
-    float* v_arrays[] = {attn->d_W_q_v, attn->d_W_k_v, attn->d_W_v_v, attn->d_W_o_v};
+    __half* m_arrays[] = {attn->d_W_q_m, attn->d_W_k_m, attn->d_W_v_m, attn->d_W_o_m};
+    __half* v_arrays[] = {attn->d_W_q_v, attn->d_W_k_v, attn->d_W_v_v, attn->d_W_o_v};
     
     for (int w = 0; w < 4; w++) {
         adamw_update_kernel_attention<<<num_blocks, block_size>>>(
@@ -595,14 +603,14 @@ void reset_optimizer_attention(Attention* attn) {
     int weight_size = attn->d_model * attn->d_model;
     
     // Reset Adam moment estimates to zero on device
-    CHECK_CUDA(cudaMemset(attn->d_W_q_m, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_q_v, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_k_m, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_k_v, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_v_m, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_v_v, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_o_m, 0, weight_size * sizeof(float)));
-    CHECK_CUDA(cudaMemset(attn->d_W_o_v, 0, weight_size * sizeof(float)));
+    CHECK_CUDA(cudaMemset(attn->d_W_q_m, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_q_v, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_k_m, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_k_v, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_v_m, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_v_v, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_o_m, 0, weight_size * sizeof(__half)));
+    CHECK_CUDA(cudaMemset(attn->d_W_o_v, 0, weight_size * sizeof(__half)));
     
     // Reset time step
     attn->t = 0;
@@ -642,34 +650,34 @@ void serialize_attention(Attention* attn, FILE* file) {
     fwrite(&attn->t, sizeof(int), 1, file);
     
     // Allocate host buffers for optimizer state
-    float* h_W_q_m = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_q_v = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_k_m = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_k_v = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_v_m = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_v_v = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_o_m = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_o_v = (float*)malloc(weight_size * sizeof(float));
+    __half* h_W_q_m = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_q_v = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_k_m = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_k_v = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_v_m = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_v_v = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_o_m = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_o_v = (__half*)malloc(weight_size * sizeof(__half));
     
     // Copy optimizer state from device
-    CHECK_CUDA(cudaMemcpy(h_W_q_m, attn->d_W_q_m, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(h_W_q_v, attn->d_W_q_v, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(h_W_k_m, attn->d_W_k_m, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(h_W_k_v, attn->d_W_k_v, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(h_W_v_m, attn->d_W_v_m, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(h_W_v_v, attn->d_W_v_v, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(h_W_o_m, attn->d_W_o_m, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(h_W_o_v, attn->d_W_o_v, weight_size * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(h_W_q_m, attn->d_W_q_m, weight_size * sizeof(__half), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(h_W_q_v, attn->d_W_q_v, weight_size * sizeof(__half), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(h_W_k_m, attn->d_W_k_m, weight_size * sizeof(__half), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(h_W_k_v, attn->d_W_k_v, weight_size * sizeof(__half), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(h_W_v_m, attn->d_W_v_m, weight_size * sizeof(__half), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(h_W_v_v, attn->d_W_v_v, weight_size * sizeof(__half), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(h_W_o_m, attn->d_W_o_m, weight_size * sizeof(__half), cudaMemcpyDeviceToHost));
+    CHECK_CUDA(cudaMemcpy(h_W_o_v, attn->d_W_o_v, weight_size * sizeof(__half), cudaMemcpyDeviceToHost));
     
     // Write optimizer state
-    fwrite(h_W_q_m, sizeof(float), weight_size, file);
-    fwrite(h_W_q_v, sizeof(float), weight_size, file);
-    fwrite(h_W_k_m, sizeof(float), weight_size, file);
-    fwrite(h_W_k_v, sizeof(float), weight_size, file);
-    fwrite(h_W_v_m, sizeof(float), weight_size, file);
-    fwrite(h_W_v_v, sizeof(float), weight_size, file);
-    fwrite(h_W_o_m, sizeof(float), weight_size, file);
-    fwrite(h_W_o_v, sizeof(float), weight_size, file);
+    fwrite(h_W_q_m, sizeof(__half), weight_size, file);
+    fwrite(h_W_q_v, sizeof(__half), weight_size, file);
+    fwrite(h_W_k_m, sizeof(__half), weight_size, file);
+    fwrite(h_W_k_v, sizeof(__half), weight_size, file);
+    fwrite(h_W_v_m, sizeof(__half), weight_size, file);
+    fwrite(h_W_v_v, sizeof(__half), weight_size, file);
+    fwrite(h_W_o_m, sizeof(__half), weight_size, file);
+    fwrite(h_W_o_v, sizeof(__half), weight_size, file);
     
     // Free host buffers
     free(h_W_q_m); free(h_W_q_v); free(h_W_k_m); free(h_W_k_v);
@@ -715,34 +723,34 @@ Attention* deserialize_attention(FILE* file, int batch_size, cublasLtHandle_t cu
     fread(&attn->t, sizeof(int), 1, file);
     
     // Allocate host buffers for optimizer state
-    float* h_W_q_m = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_q_v = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_k_m = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_k_v = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_v_m = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_v_v = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_o_m = (float*)malloc(weight_size * sizeof(float));
-    float* h_W_o_v = (float*)malloc(weight_size * sizeof(float));
+    __half* h_W_q_m = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_q_v = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_k_m = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_k_v = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_v_m = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_v_v = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_o_m = (__half*)malloc(weight_size * sizeof(__half));
+    __half* h_W_o_v = (__half*)malloc(weight_size * sizeof(__half));
     
     // Read optimizer state
-    fread(h_W_q_m, sizeof(float), weight_size, file);
-    fread(h_W_q_v, sizeof(float), weight_size, file);
-    fread(h_W_k_m, sizeof(float), weight_size, file);
-    fread(h_W_k_v, sizeof(float), weight_size, file);
-    fread(h_W_v_m, sizeof(float), weight_size, file);
-    fread(h_W_v_v, sizeof(float), weight_size, file);
-    fread(h_W_o_m, sizeof(float), weight_size, file);
-    fread(h_W_o_v, sizeof(float), weight_size, file);
+    fread(h_W_q_m, sizeof(__half), weight_size, file);
+    fread(h_W_q_v, sizeof(__half), weight_size, file);
+    fread(h_W_k_m, sizeof(__half), weight_size, file);
+    fread(h_W_k_v, sizeof(__half), weight_size, file);
+    fread(h_W_v_m, sizeof(__half), weight_size, file);
+    fread(h_W_v_v, sizeof(__half), weight_size, file);
+    fread(h_W_o_m, sizeof(__half), weight_size, file);
+    fread(h_W_o_v, sizeof(__half), weight_size, file);
     
     // Copy optimizer state to device
-    CHECK_CUDA(cudaMemcpy(attn->d_W_q_m, h_W_q_m, weight_size * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(attn->d_W_q_v, h_W_q_v, weight_size * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(attn->d_W_k_m, h_W_k_m, weight_size * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(attn->d_W_k_v, h_W_k_v, weight_size * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(attn->d_W_v_m, h_W_v_m, weight_size * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(attn->d_W_v_v, h_W_v_v, weight_size * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(attn->d_W_o_m, h_W_o_m, weight_size * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(attn->d_W_o_v, h_W_o_v, weight_size * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(attn->d_W_q_m, h_W_q_m, weight_size * sizeof(__half), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(attn->d_W_q_v, h_W_q_v, weight_size * sizeof(__half), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(attn->d_W_k_m, h_W_k_m, weight_size * sizeof(__half), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(attn->d_W_k_v, h_W_k_v, weight_size * sizeof(__half), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(attn->d_W_v_m, h_W_v_m, weight_size * sizeof(__half), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(attn->d_W_v_v, h_W_v_v, weight_size * sizeof(__half), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(attn->d_W_o_m, h_W_o_m, weight_size * sizeof(__half), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(attn->d_W_o_v, h_W_o_v, weight_size * sizeof(__half), cudaMemcpyHostToDevice));
     
     // Free host buffers
     free(h_W_q_m); free(h_W_q_v); free(h_W_k_m); free(h_W_k_v);
