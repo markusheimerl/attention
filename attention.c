@@ -90,12 +90,12 @@ void free_attention(Attention* attn) {
 
 // Softmax forward pass
 static void softmax_forward_attention(float* weights, float* scores, int batch_size, int seq_len) {
-    #pragma omp parallel for
+    #pragma omp parallel for collapse(2)
     for (int b = 0; b < batch_size; b++) {
-        float* scores_b = &scores[b * seq_len * seq_len];
-        float* weights_b = &weights[b * seq_len * seq_len];
-        
         for (int i = 0; i < seq_len; i++) {
+            float* scores_b = &scores[b * seq_len * seq_len];
+            float* weights_b = &weights[b * seq_len * seq_len];
+            
             // Find max for numerical stability
             float max_val = -1e30f;
             for (int j = 0; j < seq_len; j++) {
@@ -121,12 +121,12 @@ static void softmax_forward_attention(float* weights, float* scores, int batch_s
 
 // Causal softmax forward pass
 static void softmax_causal_forward_attention(float* weights, float* scores, int batch_size, int seq_len) {
-    #pragma omp parallel for
+    #pragma omp parallel for collapse(2)
     for (int b = 0; b < batch_size; b++) {
-        float* scores_b = &scores[b * seq_len * seq_len];
-        float* weights_b = &weights[b * seq_len * seq_len];
-        
         for (int i = 0; i < seq_len; i++) {
+            float* scores_b = &scores[b * seq_len * seq_len];
+            float* weights_b = &weights[b * seq_len * seq_len];
+            
             // Find max for numerical stability (only consider positions <= i)
             float max_val = -1e30f;
             for (int j = 0; j <= i; j++) {
@@ -156,13 +156,13 @@ static void softmax_causal_forward_attention(float* weights, float* scores, int 
 
 // Softmax backward pass
 static void softmax_backward_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len) {
-    #pragma omp parallel for
+    #pragma omp parallel for collapse(2)
     for (int b = 0; b < batch_size; b++) {
-        float* grad_weights_b = &grad_weights[b * seq_len * seq_len];
-        float* weights_b = &weights[b * seq_len * seq_len];
-        float* grad_scores_b = &grad_scores[b * seq_len * seq_len];
-        
         for (int i = 0; i < seq_len; i++) {
+            float* grad_weights_b = &grad_weights[b * seq_len * seq_len];
+            float* weights_b = &weights[b * seq_len * seq_len];
+            float* grad_scores_b = &grad_scores[b * seq_len * seq_len];
+            
             // Compute ∑_j ∂L/∂A⊙A
             float sum_term = 0.0f;
             for (int k = 0; k < seq_len; k++) {
@@ -181,13 +181,13 @@ static void softmax_backward_attention(float* grad_scores, float* grad_weights, 
 
 // Causal softmax backward pass
 static void softmax_causal_backward_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len) {
-    #pragma omp parallel for
+    #pragma omp parallel for collapse(2)
     for (int b = 0; b < batch_size; b++) {
-        float* grad_weights_b = &grad_weights[b * seq_len * seq_len];
-        float* weights_b = &weights[b * seq_len * seq_len];
-        float* grad_scores_b = &grad_scores[b * seq_len * seq_len];
-        
         for (int i = 0; i < seq_len; i++) {
+            float* grad_weights_b = &grad_weights[b * seq_len * seq_len];
+            float* weights_b = &weights[b * seq_len * seq_len];
+            float* grad_scores_b = &grad_scores[b * seq_len * seq_len];
+            
             // Compute ∑_j ∂L/∂A⊙A (only for j <= i)
             float sum_term = 0.0f;
             for (int k = 0; k <= i; k++) {
