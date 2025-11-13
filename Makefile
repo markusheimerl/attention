@@ -1,5 +1,5 @@
 CC = clang
-CFLAGS = -O3 -march=native -ffast-math -Wall -Wextra -fopenmp
+CFLAGS = -O3 -march=native -ffast-math -fopenmp -Wall -Wextra
 LDFLAGS = -lopenblas -lm -flto -fopenmp
 
 train.out: attention.o data.o train.o
