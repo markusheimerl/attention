@@ -210,7 +210,7 @@ static void softmax_causal_backward_attention(float* grad_scores, float* grad_we
 
 // RoPE forward pass
 static void rope_forward_attention(float* Q, float* K, int batch_size, int seq_len, int d_model) {
-    #pragma omp parallel for
+    #pragma omp parallel for collapse(2)
     for (int b = 0; b < batch_size; b++) {
         for (int t = 0; t < seq_len; t++) {
             for (int d_pair = 0; d_pair < d_model / 2; d_pair++) {
@@ -242,7 +242,7 @@ static void rope_forward_attention(float* Q, float* K, int batch_size, int seq_l
 
 // RoPE backward pass
 static void rope_backward_attention(float* grad_Q, float* grad_K, int batch_size, int seq_len, int d_model) {
-    #pragma omp parallel for
+    #pragma omp parallel for collapse(2)
     for (int b = 0; b < batch_size; b++) {
         for (int t = 0; t < seq_len; t++) {
             for (int d_pair = 0; d_pair < d_model / 2; d_pair++) {
