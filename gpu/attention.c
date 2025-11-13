@@ -154,8 +154,7 @@ void free_attention(Attention* attn) {
     cudaFree(attn->d_Q); cudaFree(attn->d_K); cudaFree(attn->d_V);
     cudaFree(attn->d_scores); cudaFree(attn->d_attn_weights);
     cudaFree(attn->d_attn_output); cudaFree(attn->d_output);
-    cudaFree(attn->d_grad_output); cudaFree(attn->d_grad_attn_output); cudaFree(attn->d_grad_weights);
-    cudaFree(attn->d_grad_Q); cudaFree(attn->d_grad_K); cudaFree(attn->d_grad_V);
+    cudaFree(attn->d_grad_weights);
     
     // Free loss computation buffer
     cudaFree(attn->d_loss_result);
