@@ -90,6 +90,7 @@ void free_attention(Attention* attn) {
 
 // Softmax forward pass
 static void softmax_forward_attention(float* weights, float* scores, int batch_size, int seq_len) {
+    #pragma omp parallel for
     for (int b = 0; b < batch_size; b++) {
         float* scores_b = &scores[b * seq_len * seq_len];
         float* weights_b = &weights[b * seq_len * seq_len];
@@ -120,6 +121,7 @@ static void softmax_forward_attention(float* weights, float* scores, int batch_s
 
 // Causal softmax forward pass
 static void softmax_causal_forward_attention(float* weights, float* scores, int batch_size, int seq_len) {
+    #pragma omp parallel for
     for (int b = 0; b < batch_size; b++) {
         float* scores_b = &scores[b * seq_len * seq_len];
         float* weights_b = &weights[b * seq_len * seq_len];
@@ -154,6 +156,7 @@ static void softmax_causal_forward_attention(float* weights, float* scores, int 
 
 // Softmax backward pass
 static void softmax_backward_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len) {
+    #pragma omp parallel for
     for (int b = 0; b < batch_size; b++) {
         float* grad_weights_b = &grad_weights[b * seq_len * seq_len];
         float* weights_b = &weights[b * seq_len * seq_len];
@@ -178,6 +181,7 @@ static void softmax_backward_attention(float* grad_scores, float* grad_weights, 
 
 // Causal softmax backward pass
 static void softmax_causal_backward_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len) {
+    #pragma omp parallel for
     for (int b = 0; b < batch_size; b++) {
         float* grad_weights_b = &grad_weights[b * seq_len * seq_len];
         float* weights_b = &weights[b * seq_len * seq_len];
@@ -206,6 +210,7 @@ static void softmax_causal_backward_attention(float* grad_scores, float* grad_we
 
 // RoPE forward pass
 static void rope_forward_attention(float* Q, float* K, int batch_size, int seq_len, int d_model) {
+    #pragma omp parallel for
     for (int b = 0; b < batch_size; b++) {
         for (int t = 0; t < seq_len; t++) {
             for (int d_pair = 0; d_pair < d_model / 2; d_pair++) {
@@ -237,6 +242,7 @@ static void rope_forward_attention(float* Q, float* K, int batch_size, int seq_l
 
 // RoPE backward pass
 static void rope_backward_attention(float* grad_Q, float* grad_K, int batch_size, int seq_len, int d_model) {
+    #pragma omp parallel for
     for (int b = 0; b < batch_size; b++) {
         for (int t = 0; t < seq_len; t++) {
             for (int d_pair = 0; d_pair < d_model / 2; d_pair++) {
@@ -270,6 +276,7 @@ static void rope_backward_attention(float* grad_Q, float* grad_K, int batch_size
 void forward_pass_attention(Attention* attn, float* X) {
     // Step 1: Compute Q, K, V for each batch separately
     // Q = XW_q, K = XW_k, V = XW_v
+    #pragma omp parallel for
     for (int b = 0; b < attn->batch_size; b++) {
         float* X_b = &X[b * attn->seq_len * attn->d_model];
         float* Q_b = &attn->Q[b * attn->seq_len * attn->d_model];
@@ -305,6 +312,7 @@ void forward_pass_attention(Attention* attn, float* X) {
     
     // Step 3: Compute attention scores
     // S = QKᵀ/√d_model
+    #pragma omp parallel for
     for (int b = 0; b < attn->batch_size; b++) {
         float* Q_b = &attn->Q[b * attn->seq_len * attn->d_model];
         float* K_b = &attn->K[b * attn->seq_len * attn->d_model];
@@ -327,6 +335,7 @@ void forward_pass_attention(Attention* attn, float* X) {
     
     // Step 5: Compute attention output
     // Z = AV
+    #pragma omp parallel for
     for (int b = 0; b < attn->batch_size; b++) {
         float* weights_b = &attn->attn_weights[b * attn->seq_len * attn->seq_len];
         float* V_b = &attn->V[b * attn->seq_len * attn->d_model];
@@ -342,6 +351,7 @@ void forward_pass_attention(Attention* attn, float* X) {
     
     // Step 6: Apply output projection
     // Y = ZW_o
+    #pragma omp parallel for
     for (int b = 0; b < attn->batch_size; b++) {
         float* attn_output_b = &attn->attn_output[b * attn->seq_len * attn->d_model];
         float* output_b = &attn->output[b * attn->seq_len * attn->d_model];
@@ -382,6 +392,7 @@ void zero_gradients_attention(Attention* attn) {
 void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
     // Step 6 (backward): Gradient through output projection
     // ∂L/∂W_o = Zᵀ(∂L/∂Y), ∂L/∂Z = (∂L/∂Y)W_oᵀ
+    #pragma omp parallel for
     for (int b = 0; b < attn->batch_size; b++) {
         float* grad_output_b = &attn->grad_output[b * attn->seq_len * attn->d_model];
         float* attn_output_b = &attn->attn_output[b * attn->seq_len * attn->d_model];
@@ -404,6 +415,7 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
     
     // Step 5 (backward): Gradient through attention output computation
     // ∂L/∂A = (∂L/∂Z)Vᵀ, ∂L/∂V = Aᵀ(∂L/∂Z)
+    #pragma omp parallel for
     for (int b = 0; b < attn->batch_size; b++) {
         float* grad_attn_output_b = &attn->grad_attn_output[b * attn->seq_len * attn->d_model];
         float* weights_b = &attn->attn_weights[b * attn->seq_len * attn->seq_len];
@@ -435,6 +447,7 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
     
     // Step 3 (backward): Gradient through attention scores
     // ∂L/∂Q = (∂L/∂S)K/√d_model, ∂L/∂K = (∂L/∂S)ᵀQ/√d_model
+    #pragma omp parallel for
     for (int b = 0; b < attn->batch_size; b++) {
         float* grad_scores_b = &attn->grad_scores[b * attn->seq_len * attn->seq_len];
         float* Q_b = &attn->Q[b * attn->seq_len * attn->d_model];
@@ -465,6 +478,7 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
     // Step 1 (backward): Gradient through linear projections
     // ∂L/∂W_q = Xᵀ(∂L/∂Q), ∂L/∂W_k = Xᵀ(∂L/∂K), ∂L/∂W_v = Xᵀ(∂L/∂V)
     // ∂L/∂X = (∂L/∂Q)W_qᵀ + (∂L/∂K)W_kᵀ + (∂L/∂V)W_vᵀ
+    #pragma omp parallel for
     for (int b = 0; b < attn->batch_size; b++) {
         float* X_b = &X[b * attn->seq_len * attn->d_model];
         float* grad_Q_b = &attn->grad_Q[b * attn->seq_len * attn->d_model];
