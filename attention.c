@@ -19,9 +19,9 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     attn->t = 0;
     attn->weight_decay = 0.01f;
     
-    int weight_size = d_model * d_model;
-    int seq_batch_size = batch_size * seq_len * d_model;
-    int attn_matrix_size = batch_size * seq_len * seq_len;
+    size_t weight_size = d_model * d_model;
+    size_t seq_batch_size = batch_size * seq_len * d_model;
+    size_t attn_matrix_size = batch_size * seq_len * seq_len;
     
     // Allocate weights and gradients
     attn->W_q = (float*)malloc(weight_size * sizeof(float));
@@ -65,7 +65,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     // Initialize weights
     float scale_W = 1.0f / sqrtf(d_model);
     
-    for (int i = 0; i < weight_size; i++) {
+    for (size_t i = 0; i < weight_size; i++) {
         attn->W_q[i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_W;
         attn->W_k[i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_W;
         attn->W_v[i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_W;

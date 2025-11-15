@@ -22,9 +22,9 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     // Initialize cuBLASLt
     attn->cublaslt_handle = cublaslt_handle;
     
-    int weight_size = d_model * d_model;
-    int seq_batch_size = batch_size * seq_len * d_model;
-    int attn_matrix_size = batch_size * seq_len * seq_len;
+    size_t weight_size = d_model * d_model;
+    size_t seq_batch_size = batch_size * seq_len * d_model;
+    size_t attn_matrix_size = batch_size * seq_len * seq_len;
     
     // Allocate host memory for weight initialization
     float* h_W_q = (float*)malloc(weight_size * sizeof(float));
@@ -35,7 +35,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     // Initialize weights on host
     float scale_W = 1.0f / sqrtf(d_model);
     
-    for (int i = 0; i < weight_size; i++) {
+    for (size_t i = 0; i < weight_size; i++) {
         h_W_q[i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_W;
         h_W_k[i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_W;
         h_W_v[i] = ((float)rand() / (float)RAND_MAX * 2.0f - 1.0f) * scale_W;
