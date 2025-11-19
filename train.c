@@ -81,7 +81,7 @@ int main() {
     printf("\nVerifying saved model...\n");
 
     model_file = fopen(model_fname, "rb");
-    Attention* loaded_attn = deserialize_attention(model_file, batch_size);
+    Attention* loaded_attn = deserialize_attention(model_file, batch_size, seq_len);
     fclose(model_file);
     printf("Model loaded from %s\n", model_fname);
 

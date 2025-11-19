@@ -610,8 +610,7 @@ void reset_optimizer_attention(Attention* attn) {
 
 // Serialize attention to file
 void serialize_attention(Attention* attn, FILE* file) {
-    // Write dimensions
-    fwrite(&attn->seq_len, sizeof(int), 1, file);
+    // Write dimension
     fwrite(&attn->d_model, sizeof(int), 1, file);
     fwrite(&attn->is_causal, sizeof(bool), 1, file);
     fwrite(&attn->use_rope, sizeof(bool), 1, file);
@@ -677,11 +676,10 @@ void serialize_attention(Attention* attn, FILE* file) {
 }
 
 // Deserialize attention from file
-Attention* deserialize_attention(FILE* file, int batch_size, cublasLtHandle_t cublaslt_handle) {
-    // Read dimensions
-    int seq_len, d_model;
+Attention* deserialize_attention(FILE* file, int batch_size, int seq_len, cublasLtHandle_t cublaslt_handle) {
+    // Read dimension
+    int d_model;
     bool is_causal, use_rope;
-    fread(&seq_len, sizeof(int), 1, file);
     fread(&d_model, sizeof(int), 1, file);
     fread(&is_causal, sizeof(bool), 1, file);
     fread(&use_rope, sizeof(bool), 1, file);
