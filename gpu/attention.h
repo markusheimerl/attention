@@ -119,7 +119,7 @@ void forward_pass_attention(Attention* attn, float* d_X);
 float calculate_loss_attention(Attention* attn, float* d_y);
 void zero_gradients_attention(Attention* attn);
 void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X);
-void update_weights_attention(Attention* attn, float learning_rate, int effective_batch_size);
+void update_weights_attention(Attention* attn, float learning_rate, int batch_size);
 void reset_optimizer_attention(Attention* attn);
 void serialize_attention(Attention* attn, FILE* file);
 Attention* deserialize_attention(FILE* file, int batch_size, int seq_len, cublasLtHandle_t cublaslt_handle);

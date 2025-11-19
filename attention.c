@@ -521,7 +521,7 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
 }
 
 // Update weights using AdamW
-void update_weights_attention(Attention* attn, float learning_rate, int effective_batch_size) {
+void update_weights_attention(Attention* attn, float learning_rate, int batch_size) {
     attn->t++;
     
     float beta1_t = powf(attn->beta1, attn->t);
@@ -538,7 +538,7 @@ void update_weights_attention(Attention* attn, float learning_rate, int effectiv
     
     for (int w = 0; w < 4; w++) {
         for (int i = 0; i < weight_size; i++) {
-            float grad = grads[w][i] / effective_batch_size;
+            float grad = grads[w][i] / batch_size;
             
             // m = β₁m + (1-β₁)(∂L/∂W)
             m_arrays[w][i] = attn->beta1 * m_arrays[w][i] + (1.0f - attn->beta1) * grad;

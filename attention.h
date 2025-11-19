@@ -66,7 +66,7 @@ void forward_pass_attention(Attention* attn, float* X);
 float calculate_loss_attention(Attention* attn, float* y);
 void zero_gradients_attention(Attention* attn);
 void backward_pass_attention(Attention* attn, float* X, float* grad_X);
-void update_weights_attention(Attention* attn, float learning_rate, int effective_batch_size);
+void update_weights_attention(Attention* attn, float learning_rate, int batch_size);
 void reset_optimizer_attention(Attention* attn);
 void serialize_attention(Attention* attn, FILE* file);
 Attention* deserialize_attention(FILE* file, int seq_len, int batch_size);
