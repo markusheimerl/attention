@@ -50,30 +50,30 @@
 #endif
 
 typedef struct {
-    // Device weights for attention mechanism
+    // Device weights for attention mechanism (FP16)
     half* d_W_q;      // Query projection [d_model x d_model]
     half* d_W_k;      // Key projection [d_model x d_model]
     half* d_W_v;      // Value projection [d_model x d_model]
     half* d_W_o;      // Output projection [d_model x d_model]
     
-    // Device gradients
+    // Device gradients (FP16)
     half* d_W_q_grad; // [d_model x d_model]
     half* d_W_k_grad; // [d_model x d_model]
     half* d_W_v_grad; // [d_model x d_model]
     half* d_W_o_grad; // [d_model x d_model]
     
-    // Adam parameters
-    half* d_W_q_m, *d_W_q_v;  // First and second moments for W_q
-    half* d_W_k_m, *d_W_k_v;  // First and second moments for W_k
-    half* d_W_v_m, *d_W_v_v;  // First and second moments for W_v
-    half* d_W_o_m, *d_W_o_v;  // First and second moments for W_o
+    // Adam parameters (FP32 for numerical stability)
+    float* d_W_q_m, *d_W_q_v;  // First and second moments for W_q
+    float* d_W_k_m, *d_W_k_v;  // First and second moments for W_k
+    float* d_W_v_m, *d_W_v_v;  // First and second moments for W_v
+    float* d_W_o_m, *d_W_o_v;  // First and second moments for W_o
     float beta1;               // Exponential decay rate for first moment
     float beta2;               // Exponential decay rate for second moment
     float epsilon;             // Small constant for numerical stability
     int t;                     // Time step
     float weight_decay;        // Weight decay parameter for AdamW
     
-    // Forward pass buffers
+    // Forward pass buffers (FP16)
     half* d_Q;            // Query matrix [batch_size x seq_len x d_model]
     half* d_K;            // Key matrix [batch_size x seq_len x d_model]
     half* d_V;            // Value matrix [batch_size x seq_len x d_model]
@@ -82,7 +82,7 @@ typedef struct {
     half* d_attn_output;  // Attention output [batch_size x seq_len x d_model]
     half* d_output;       // Final output [batch_size x seq_len x d_model]
     
-    // Backward pass buffers
+    // Backward pass buffers (FP16)
     half* d_grad_output;      // [batch_size x seq_len x d_model]
     half* d_grad_attn_output; // [batch_size x seq_len x d_model]
     half* d_grad_weights;     // [batch_size x seq_len x seq_len]
@@ -91,8 +91,8 @@ typedef struct {
     half* d_grad_K;           // [batch_size x seq_len x d_model]
     half* d_grad_V;           // [batch_size x seq_len x d_model]
 
-    // Loss computation buffer
-    float* d_loss_result;      // [1] - FP32 for accumulation
+    // Loss computation buffer (FP32 for accumulation)
+    float* d_loss_result;      // [1]
 
     // cuBLASLt handle and descriptor
     cublasLtHandle_t cublaslt_handle;
