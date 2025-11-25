@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <time.h>
+#include <cuda_fp16.h>
 #include "../data.h"
 #include "attention.h"
 
@@ -21,6 +22,12 @@ int main() {
     // Generate synthetic data
     float *X, *y;
     generate_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
+
+    // Convert synthetic data to half precision
+    half *h_X = (half*)malloc(num_samples * seq_len * d_model * sizeof(half));
+    half *h_y = (half*)malloc(num_samples * seq_len * d_model * sizeof(half));
+    for (int i = 0; i < num_samples * seq_len * d_model; i++) h_X[i] = __float2half(X[i]);
+    for (int i = 0; i < num_samples * seq_len * d_model; i++) h_y[i] = __float2half(y[i]);
     
     // Initialize attention layer
     Attention* attn = init_attention(seq_len, d_model, batch_size, false, false, cublaslt_handle);
@@ -31,9 +38,9 @@ int main() {
     const int num_batches = num_samples / batch_size;
     
     // Allocate device memory for batch data
-    float *d_X, *d_y;
-    CHECK_CUDA(cudaMalloc(&d_X, batch_size * seq_len * d_model * sizeof(float)));
-    CHECK_CUDA(cudaMalloc(&d_y, batch_size * seq_len * d_model * sizeof(float)));
+    half *d_X, *d_y;
+    CHECK_CUDA(cudaMalloc(&d_X, batch_size * seq_len * d_model * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&d_y, batch_size * seq_len * d_model * sizeof(half)));
     
     // Training loop
     for (int epoch = 0; epoch < num_epochs + 1; epoch++) {
@@ -44,8 +51,8 @@ int main() {
             int batch_offset = batch * batch_size * seq_len * d_model;
 
             // Copy batch data to device
-            CHECK_CUDA(cudaMemcpy(d_X, &X[batch_offset], batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
-            CHECK_CUDA(cudaMemcpy(d_y, &y[batch_offset], batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
+            CHECK_CUDA(cudaMemcpy(d_X, &h_X[batch_offset], batch_size * seq_len * d_model * sizeof(half), cudaMemcpyHostToDevice));
+            CHECK_CUDA(cudaMemcpy(d_y, &h_y[batch_offset], batch_size * seq_len * d_model * sizeof(half), cudaMemcpyHostToDevice));
             
             // Forward pass
             forward_pass_attention(attn, d_X);
@@ -97,12 +104,12 @@ int main() {
     printf("Model loaded from %s\n", model_fname);
 
     // Forward pass with loaded model on first batch
-    CHECK_CUDA(cudaMemcpy(d_X, X, batch_size * seq_len * d_model * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(d_X, h_X, batch_size * seq_len * d_model * sizeof(half), cudaMemcpyHostToDevice));
     forward_pass_attention(loaded_attn, d_X);
     
     // Copy predictions back to host
-    float* output = (float*)malloc(batch_size * seq_len * d_model * sizeof(float));
-    CHECK_CUDA(cudaMemcpy(output, loaded_attn->d_output, batch_size * seq_len * d_model * sizeof(float), cudaMemcpyDeviceToHost));
+    half* h_output = (half*)malloc(batch_size * seq_len * d_model * sizeof(half));
+    CHECK_CUDA(cudaMemcpy(h_output, loaded_attn->d_output, batch_size * seq_len * d_model * sizeof(half), cudaMemcpyDeviceToHost));
 
     // Evaluate model performance on first batch
     printf("Feature\tR²\t\tMAE\t\tSample Predictions\n");
@@ -116,7 +123,7 @@ int main() {
         for (int b = 0; b < batch_size; b++) {
             for (int t = 0; t < seq_len; t++) {
                 int idx = b * seq_len * d_model + t * d_model + d;
-                y_mean += y[idx];
+                y_mean += __half2float(h_y[idx]);
             }
         }
         y_mean /= total_elements;
@@ -126,8 +133,8 @@ int main() {
         for (int b = 0; b < batch_size; b++) {
             for (int t = 0; t < seq_len; t++) {
                 int idx = b * seq_len * d_model + t * d_model + d;
-                float pred = output[idx];
-                float actual = y[idx];
+                float pred = __half2float(h_output[idx]);
+                float actual = __half2float(h_y[idx]);
                 float diff = pred - actual;
                 
                 ss_res += diff * diff;
@@ -144,8 +151,8 @@ int main() {
         for (int sample = 0; sample < 3; sample++) {
             // Show predictions from batch 0, positions 0, 1, 2
             int idx = 0 * seq_len * d_model + sample * d_model + d;
-            float pred = output[idx];
-            float actual = y[idx];
+            float pred = __half2float(h_output[idx]);
+            float actual = __half2float(h_y[idx]);
             printf("%.2f/%.2f ", pred, actual);
         }
         printf("\n");
@@ -154,7 +161,9 @@ int main() {
     // Cleanup
     free(X);
     free(y);
-    free(output);
+    free(h_X);
+    free(h_y);
+    free(h_output);
     CHECK_CUDA(cudaFree(d_X));
     CHECK_CUDA(cudaFree(d_y));
     free_attention(attn);
