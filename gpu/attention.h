@@ -77,27 +77,27 @@ typedef struct {
     half* d_Q;            // Query matrix [batch_size x seq_len x d_model]
     half* d_K;            // Key matrix [batch_size x seq_len x d_model]
     half* d_V;            // Value matrix [batch_size x seq_len x d_model]
-    half* d_Q_mh;         // Multi-head query [batch_size x num_heads x seq_len x d_k]
-    half* d_K_mh;         // Multi-head key [batch_size x num_heads x seq_len x d_k]
-    half* d_V_mh;         // Multi-head value [batch_size x num_heads x seq_len x d_k]
+    half* d_Q_heads;      // Query split into heads [batch_size x num_heads x seq_len x d_head]
+    half* d_K_heads;      // Key split into heads [batch_size x num_heads x seq_len x d_head]
+    half* d_V_heads;      // Value split into heads [batch_size x num_heads x seq_len x d_head]
     half* d_scores;       // Attention scores [batch_size x num_heads x seq_len x seq_len]
     half* d_attn_weights; // Attention weights [batch_size x num_heads x seq_len x seq_len]
-    half* d_attn_output_mh; // Multi-head attention output [batch_size x num_heads x seq_len x d_k]
     half* d_attn_output;  // Attention output [batch_size x seq_len x d_model]
+    half* d_attn_out_heads; // Attention output per head [batch_size x num_heads x seq_len x d_head]
     half* d_output;       // Final output [batch_size x seq_len x d_model]
     
     // Backward pass buffers
     half* d_grad_output;      // [batch_size x seq_len x d_model]
     half* d_grad_attn_output; // [batch_size x seq_len x d_model]
-    half* d_grad_attn_output_mh; // [batch_size x num_heads x seq_len x d_k]
+    half* d_grad_attn_out_heads; // [batch_size x num_heads x seq_len x d_head]
     half* d_grad_weights;     // [batch_size x num_heads x seq_len x seq_len]
     half* d_grad_scores;      // [batch_size x num_heads x seq_len x seq_len]
-    half* d_grad_Q_mh;        // [batch_size x num_heads x seq_len x d_k]
-    half* d_grad_K_mh;        // [batch_size x num_heads x seq_len x d_k]
-    half* d_grad_V_mh;        // [batch_size x num_heads x seq_len x d_k]
     half* d_grad_Q;           // [batch_size x seq_len x d_model]
     half* d_grad_K;           // [batch_size x seq_len x d_model]
     half* d_grad_V;           // [batch_size x seq_len x d_model]
+    half* d_grad_Q_heads;     // [batch_size x num_heads x seq_len x d_head]
+    half* d_grad_K_heads;     // [batch_size x num_heads x seq_len x d_head]
+    half* d_grad_V_heads;     // [batch_size x num_heads x seq_len x d_head]
 
     // Loss computation buffer
     float* d_loss_result;      // [1]
@@ -109,22 +109,22 @@ typedef struct {
     // Matrix layouts
     cublasLtMatrixLayout_t weight_layout;     // [d_model x d_model]
     cublasLtMatrixLayout_t seq_flat_layout;   // [batch_size * seq_len x d_model]
-    cublasLtMatrixLayout_t seq_head_layout;   // [seq_len x d_k] batched by batch_size * num_heads
-    cublasLtMatrixLayout_t attn_head_layout;  // [seq_len x seq_len] batched by batch_size * num_heads
+    cublasLtMatrixLayout_t seq_head_layout;   // [seq_len x d_head] batched by batch_size*num_heads
+    cublasLtMatrixLayout_t attn_head_layout;  // [seq_len x seq_len] batched by batch_size*num_heads
     
     // Dimensions
     int seq_len;
     int d_model;
-    int num_heads;
-    int d_k;
     int batch_size;
+    int num_heads;
+    int d_head;
     float scale;
     bool is_causal;
     bool use_rope;
 } Attention;
 
 // Function prototypes
-Attention* init_attention(int seq_len, int d_model, int num_heads, int batch_size, bool is_causal, bool use_rope, cublasLtHandle_t cublaslt_handle);
+Attention* init_attention(int seq_len, int d_model, int batch_size, int num_heads, bool is_causal, bool use_rope, cublasLtHandle_t cublaslt_handle);
 void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, half* d_X);
 float calculate_loss_attention(Attention* attn, half* d_y);

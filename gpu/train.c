@@ -30,7 +30,7 @@ int main() {
     for (int i = 0; i < num_samples * seq_len * d_model; i++) h_y[i] = __float2half(y[i]);
     
     // Initialize attention layer
-    Attention* attn = init_attention(seq_len, d_model, 4, batch_size, false, false, cublaslt_handle);
+    Attention* attn = init_attention(seq_len, d_model, batch_size, 4, false, false, cublaslt_handle);
     
     // Training parameters
     const int num_epochs = 50;
