@@ -74,30 +74,23 @@ typedef struct {
     float weight_decay;        // Weight decay parameter for AdamW
     
     // Forward pass buffers
-    half* d_Q;            // Query matrix [batch_size x seq_len x d_model]
-    half* d_K;            // Key matrix [batch_size x seq_len x d_model]
-    half* d_V;            // Value matrix [batch_size x seq_len x d_model]
-    half* d_Q_heads;      // Query split into heads [batch_size x num_heads x seq_len x d_head]
-    half* d_K_heads;      // Key split into heads [batch_size x num_heads x seq_len x d_head]
-    half* d_V_heads;      // Value split into heads [batch_size x num_heads x seq_len x d_head]
+    half* d_Q;            // Query matrix [batch_size x seq_len x d_model] or [batch_size x num_heads x seq_len x d_head]
+    half* d_K;            // Key matrix [batch_size x seq_len x d_model] or [batch_size x num_heads x seq_len x d_head]
+    half* d_V;            // Value matrix [batch_size x seq_len x d_model] or [batch_size x num_heads x seq_len x d_head]
     half* d_scores;       // Attention scores [batch_size x num_heads x seq_len x seq_len]
     half* d_attn_weights; // Attention weights [batch_size x num_heads x seq_len x seq_len]
-    half* d_attn_output;  // Attention output [batch_size x seq_len x d_model]
-    half* d_attn_out_heads; // Attention output per head [batch_size x num_heads x seq_len x d_head]
+    half* d_attn_output;  // Attention output [batch_size x seq_len x d_model] or [batch_size x num_heads x seq_len x d_head]
     half* d_output;       // Final output [batch_size x seq_len x d_model]
+    half* d_scratch;      // Scratch buffer for in-place transposes [batch_size x num_heads x seq_len x d_head]
     
     // Backward pass buffers
     half* d_grad_output;      // [batch_size x seq_len x d_model]
     half* d_grad_attn_output; // [batch_size x seq_len x d_model]
-    half* d_grad_attn_out_heads; // [batch_size x num_heads x seq_len x d_head]
     half* d_grad_weights;     // [batch_size x num_heads x seq_len x seq_len]
     half* d_grad_scores;      // [batch_size x num_heads x seq_len x seq_len]
     half* d_grad_Q;           // [batch_size x seq_len x d_model]
     half* d_grad_K;           // [batch_size x seq_len x d_model]
     half* d_grad_V;           // [batch_size x seq_len x d_model]
-    half* d_grad_Q_heads;     // [batch_size x num_heads x seq_len x d_head]
-    half* d_grad_K_heads;     // [batch_size x num_heads x seq_len x d_head]
-    half* d_grad_V_heads;     // [batch_size x num_heads x seq_len x d_head]
 
     // Loss computation buffer
     float* d_loss_result;      // [1]

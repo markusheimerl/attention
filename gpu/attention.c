@@ -1,7 +1,7 @@
 #include "attention.h"
 
 // CUDA kernel to transpose from [B, L, H, d_head] to [B, H, L, d_head]
-__global__ static void transpose_heads_forward_kernel(half* dst, half* src, int batch_size, int seq_len, int num_heads, int d_head) {
+__global__ static void transpose_to_heads_kernel(half* dst, half* src, int batch_size, int seq_len, int num_heads, int d_head) {
     int b = blockIdx.x;
     int h = blockIdx.y;
     int l = blockIdx.z * blockDim.x + threadIdx.x;
@@ -20,7 +20,7 @@ __global__ static void transpose_heads_forward_kernel(half* dst, half* src, int 
 }
 
 // CUDA kernel to transpose from [B, H, L, d_head] to [B, L, H, d_head]
-__global__ static void transpose_heads_backward_kernel(half* dst, half* src, int batch_size, int seq_len, int num_heads, int d_head) {
+__global__ static void transpose_from_heads_kernel(half* dst, half* src, int batch_size, int seq_len, int num_heads, int d_head) {
     int b = blockIdx.x;
     int h = blockIdx.y;
     int l = blockIdx.z * blockDim.x + threadIdx.x;
@@ -107,27 +107,20 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, int num_head
     CHECK_CUDA(cudaMalloc(&attn->d_Q, seq_batch_size * sizeof(half)));
     CHECK_CUDA(cudaMalloc(&attn->d_K, seq_batch_size * sizeof(half)));
     CHECK_CUDA(cudaMalloc(&attn->d_V, seq_batch_size * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&attn->d_Q_heads, seq_batch_size * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&attn->d_K_heads, seq_batch_size * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&attn->d_V_heads, seq_batch_size * sizeof(half)));
     CHECK_CUDA(cudaMalloc(&attn->d_scores, attn_matrix_size * sizeof(half)));
     CHECK_CUDA(cudaMalloc(&attn->d_attn_weights, attn_matrix_size * sizeof(half)));
     CHECK_CUDA(cudaMalloc(&attn->d_attn_output, seq_batch_size * sizeof(half)));
-    CHECK_CUDA(cudaMalloc(&attn->d_attn_out_heads, seq_batch_size * sizeof(half)));
     CHECK_CUDA(cudaMalloc(&attn->d_output, seq_batch_size * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&attn->d_scratch, seq_batch_size * sizeof(half)));
     
     // Alias/Allocate device memory for backward pass buffers
     attn->d_grad_output = attn->d_output;
     attn->d_grad_attn_output = attn->d_attn_output;
-    attn->d_grad_attn_out_heads = attn->d_attn_out_heads;
     CHECK_CUDA(cudaMalloc(&attn->d_grad_weights, attn_matrix_size * sizeof(half)));
     attn->d_grad_scores = attn->d_scores;
     attn->d_grad_Q = attn->d_Q;
     attn->d_grad_K = attn->d_K;
     attn->d_grad_V = attn->d_V;
-    attn->d_grad_Q_heads = attn->d_Q_heads;
-    attn->d_grad_K_heads = attn->d_K_heads;
-    attn->d_grad_V_heads = attn->d_V_heads;
     
     // Allocate single device float for loss computation
     CHECK_CUDA(cudaMalloc(&attn->d_loss_result, sizeof(float)));
@@ -201,9 +194,9 @@ void free_attention(Attention* attn) {
     cudaFree(attn->d_W_q_m); cudaFree(attn->d_W_q_v); cudaFree(attn->d_W_k_m); cudaFree(attn->d_W_k_v);
     cudaFree(attn->d_W_v_m); cudaFree(attn->d_W_v_v); cudaFree(attn->d_W_o_m); cudaFree(attn->d_W_o_v);
     cudaFree(attn->d_Q); cudaFree(attn->d_K); cudaFree(attn->d_V);
-    cudaFree(attn->d_Q_heads); cudaFree(attn->d_K_heads); cudaFree(attn->d_V_heads);
     cudaFree(attn->d_scores); cudaFree(attn->d_attn_weights);
-    cudaFree(attn->d_attn_output); cudaFree(attn->d_attn_out_heads); cudaFree(attn->d_output);
+    cudaFree(attn->d_attn_output); cudaFree(attn->d_output);
+    cudaFree(attn->d_scratch);
     cudaFree(attn->d_grad_weights);
     
     // Free loss computation buffer
@@ -422,23 +415,26 @@ void forward_pass_attention(Attention* attn, half* d_X) {
               attn->d_W_v, attn->weight_layout,
               &beta, attn->d_V, attn->seq_flat_layout);
     
-    // Step 1.5: Transpose Q, K, V from [B, L, H, d_head] to [B, H, L, d_head]
+    // Step 1.5: Transpose Q, K, V in-place from [B, L, H, d_head] to [B, H, L, d_head]
     dim3 grid_transpose(attn->batch_size, attn->num_heads, (attn->seq_len + 31) / 32);
-    transpose_heads_forward_kernel<<<grid_transpose, 32>>>(attn->d_Q_heads, attn->d_Q, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
-    transpose_heads_forward_kernel<<<grid_transpose, 32>>>(attn->d_K_heads, attn->d_K, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
-    transpose_heads_forward_kernel<<<grid_transpose, 32>>>(attn->d_V_heads, attn->d_V, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    transpose_to_heads_kernel<<<grid_transpose, 32>>>(attn->d_scratch, attn->d_Q, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    CHECK_CUDA(cudaMemcpy(attn->d_Q, attn->d_scratch, attn->batch_size * attn->num_heads * attn->seq_len * attn->d_head * sizeof(half), cudaMemcpyDeviceToDevice));
+    transpose_to_heads_kernel<<<grid_transpose, 32>>>(attn->d_scratch, attn->d_K, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    CHECK_CUDA(cudaMemcpy(attn->d_K, attn->d_scratch, attn->batch_size * attn->num_heads * attn->seq_len * attn->d_head * sizeof(half), cudaMemcpyDeviceToDevice));
+    transpose_to_heads_kernel<<<grid_transpose, 32>>>(attn->d_scratch, attn->d_V, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    CHECK_CUDA(cudaMemcpy(attn->d_V, attn->d_scratch, attn->batch_size * attn->num_heads * attn->seq_len * attn->d_head * sizeof(half), cudaMemcpyDeviceToDevice));
     
     // Step 2: Apply RoPE to Q and K (per head)
     if (attn->use_rope) {
         dim3 grid_rope(attn->batch_size, attn->num_heads, attn->seq_len);
-        rope_forward_kernel_attention<<<grid_rope, attn->d_head / 2>>>(attn->d_Q_heads, attn->d_K_heads, attn->batch_size, attn->num_heads, attn->seq_len, attn->d_head);
+        rope_forward_kernel_attention<<<grid_rope, attn->d_head / 2>>>(attn->d_Q, attn->d_K, attn->batch_size, attn->num_heads, attn->seq_len, attn->d_head);
     }
     
     // Step 3: Compute attention scores (batched by B*H: [L x d_head] * [d_head x L] -> [L x L])
     // S = QKᵀ/√d_head
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &attn->scale,
-              attn->d_Q_heads, attn->seq_head_layout,
-              attn->d_K_heads, attn->seq_head_layout,
+              attn->d_Q, attn->seq_head_layout,
+              attn->d_K, attn->seq_head_layout,
               &beta, attn->d_scores, attn->attn_head_layout);
     
     // Step 4: Apply softmax (per head)
@@ -454,11 +450,12 @@ void forward_pass_attention(Attention* attn, half* d_X) {
     // Z = AV
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &alpha,
               attn->d_attn_weights, attn->attn_head_layout,
-              attn->d_V_heads, attn->seq_head_layout,
-              &beta, attn->d_attn_out_heads, attn->seq_head_layout);
+              attn->d_V, attn->seq_head_layout,
+              &beta, attn->d_attn_output, attn->seq_head_layout);
     
-    // Step 5.5: Transpose attention output from [B, H, L, d_head] back to [B, L, H, d_head] = [B, L, D]
-    transpose_heads_backward_kernel<<<grid_transpose, 32>>>(attn->d_attn_output, attn->d_attn_out_heads, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    // Step 5.5: Transpose attention output in-place from [B, H, L, d_head] back to [B, L, H, d_head] = [B, L, D]
+    transpose_from_heads_kernel<<<grid_transpose, 32>>>(attn->d_scratch, attn->d_attn_output, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    CHECK_CUDA(cudaMemcpy(attn->d_attn_output, attn->d_scratch, attn->batch_size * attn->seq_len * attn->d_model * sizeof(half), cudaMemcpyDeviceToDevice));
     
     // Step 6: Apply output projection (flattened: [B * L x D] * [D x D] -> [B * L x D])
     // Y = ZW_o
@@ -530,22 +527,23 @@ void backward_pass_attention(Attention* attn, half* d_X, half* d_grad_X) {
               attn->d_W_o, attn->weight_layout,
               &beta, attn->d_grad_attn_output, attn->seq_flat_layout);
     
-    // Step 5.5 (backward): Transpose gradient from [B, L, H, d_head] to [B, H, L, d_head]
+    // Step 5.5 (backward): Transpose gradient in-place from [B, L, H, d_head] to [B, H, L, d_head]
     dim3 grid_transpose(attn->batch_size, attn->num_heads, (attn->seq_len + 31) / 32);
-    transpose_heads_forward_kernel<<<grid_transpose, 32>>>(attn->d_grad_attn_out_heads, attn->d_grad_attn_output, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    transpose_to_heads_kernel<<<grid_transpose, 32>>>(attn->d_scratch, attn->d_grad_attn_output, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    CHECK_CUDA(cudaMemcpy(attn->d_grad_attn_output, attn->d_scratch, attn->batch_size * attn->num_heads * attn->seq_len * attn->d_head * sizeof(half), cudaMemcpyDeviceToDevice));
     
     // Step 5 (backward): Gradient through attention output computation
     // ∂L/∂A = (∂L/∂Z)Vᵀ (batched by B*H)
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
-              attn->d_grad_attn_out_heads, attn->seq_head_layout,
-              attn->d_V_heads, attn->seq_head_layout,
+              attn->d_grad_attn_output, attn->seq_head_layout,
+              attn->d_V, attn->seq_head_layout,
               &beta, attn->d_grad_weights, attn->attn_head_layout);
     
-    // ∂L/∂V = Aᵀ(∂L/∂Z) (batched by B*H)
+    // ∂L/∂V = Aᵀ(∂L/∂Z) (batched by B*H, write to d_V which already holds V in heads layout)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
               attn->d_attn_weights, attn->attn_head_layout,
-              attn->d_grad_attn_out_heads, attn->seq_head_layout,
-              &beta, attn->d_grad_V_heads, attn->seq_head_layout);
+              attn->d_grad_attn_output, attn->seq_head_layout,
+              &beta, attn->d_grad_V, attn->seq_head_layout);
     
     // Step 4 (backward): Gradient through softmax (per head)
     int total_batches = attn->batch_size * attn->num_heads;
@@ -557,28 +555,31 @@ void backward_pass_attention(Attention* attn, half* d_X, half* d_grad_X) {
     }
     
     // Step 3 (backward): Gradient through attention scores
-    // ∂L/∂Q = (∂L/∂S)K/√d_head (batched by B*H)
+    // ∂L/∂Q = (∂L/∂S)K/√d_head (batched by B*H, write to d_Q which already holds Q in heads layout)
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &attn->scale,
               attn->d_grad_scores, attn->attn_head_layout,
-              attn->d_K_heads, attn->seq_head_layout,
-              &beta, attn->d_grad_Q_heads, attn->seq_head_layout);
+              attn->d_K, attn->seq_head_layout,
+              &beta, attn->d_grad_Q, attn->seq_head_layout);
     
-    // ∂L/∂K = (∂L/∂S)ᵀQ/√d_head (batched by B*H)
+    // ∂L/∂K = (∂L/∂S)ᵀQ/√d_head (batched by B*H, write to d_K which already holds K in heads layout)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &attn->scale,
               attn->d_grad_scores, attn->attn_head_layout,
-              attn->d_Q_heads, attn->seq_head_layout,
-              &beta, attn->d_grad_K_heads, attn->seq_head_layout);
+              attn->d_Q, attn->seq_head_layout,
+              &beta, attn->d_grad_K, attn->seq_head_layout);
     
     // Step 2 (backward): Apply inverse RoPE to grad_Q and grad_K (per head)
     if (attn->use_rope) {
         dim3 grid_rope(attn->batch_size, attn->num_heads, attn->seq_len);
-        rope_backward_kernel_attention<<<grid_rope, attn->d_head / 2>>>(attn->d_grad_Q_heads, attn->d_grad_K_heads, attn->batch_size, attn->num_heads, attn->seq_len, attn->d_head);
+        rope_backward_kernel_attention<<<grid_rope, attn->d_head / 2>>>(attn->d_grad_Q, attn->d_grad_K, attn->batch_size, attn->num_heads, attn->seq_len, attn->d_head);
     }
     
-    // Step 1.5 (backward): Transpose gradients from [B, H, L, d_head] back to [B, L, H, d_head]
-    transpose_heads_backward_kernel<<<grid_transpose, 32>>>(attn->d_grad_Q, attn->d_grad_Q_heads, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
-    transpose_heads_backward_kernel<<<grid_transpose, 32>>>(attn->d_grad_K, attn->d_grad_K_heads, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
-    transpose_heads_backward_kernel<<<grid_transpose, 32>>>(attn->d_grad_V, attn->d_grad_V_heads, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    // Step 1.5 (backward): Transpose gradients in-place from [B, H, L, d_head] back to [B, L, H, d_head]
+    transpose_from_heads_kernel<<<grid_transpose, 32>>>(attn->d_scratch, attn->d_grad_Q, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    CHECK_CUDA(cudaMemcpy(attn->d_grad_Q, attn->d_scratch, attn->batch_size * attn->seq_len * attn->d_model * sizeof(half), cudaMemcpyDeviceToDevice));
+    transpose_from_heads_kernel<<<grid_transpose, 32>>>(attn->d_scratch, attn->d_grad_K, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    CHECK_CUDA(cudaMemcpy(attn->d_grad_K, attn->d_scratch, attn->batch_size * attn->seq_len * attn->d_model * sizeof(half), cudaMemcpyDeviceToDevice));
+    transpose_from_heads_kernel<<<grid_transpose, 32>>>(attn->d_scratch, attn->d_grad_V, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_head);
+    CHECK_CUDA(cudaMemcpy(attn->d_grad_V, attn->d_scratch, attn->batch_size * attn->seq_len * attn->d_model * sizeof(half), cudaMemcpyDeviceToDevice));
     
     // Step 1 (backward): Gradient through linear projections
     // ∂L/∂W_q = Xᵀ(∂L/∂Q) (flattened)
