@@ -1,14 +1,16 @@
 #include "attention.h"
 
 // Initialize the attention layer
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, bool use_rope, cublasLtHandle_t cublaslt_handle) {
+Attention* init_attention(int seq_len, int d_model, int num_heads, int batch_size, bool is_causal, bool use_rope, cublasLtHandle_t cublaslt_handle) {
     Attention* attn = (Attention*)malloc(sizeof(Attention));
     
     // Store dimensions
     attn->seq_len = seq_len;
     attn->d_model = d_model;
+    attn->num_heads = num_heads;
+    attn->d_k = d_model / num_heads;
     attn->batch_size = batch_size;
-    attn->scale = 1.0f / sqrtf(d_model);
+    attn->scale = 1.0f / sqrtf(attn->d_k);
     attn->is_causal = is_causal;
     attn->use_rope = use_rope;
     
@@ -24,7 +26,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     
     size_t weight_size = d_model * d_model;
     size_t seq_batch_size = batch_size * seq_len * d_model;
-    size_t attn_matrix_size = batch_size * seq_len * seq_len;
+    size_t attn_matrix_size = batch_size * num_heads * seq_len * seq_len;
     
     // Allocate host memory for weight initialization
     half* h_W_q = (half*)malloc(weight_size * sizeof(half));
@@ -67,17 +69,25 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     CHECK_CUDA(cudaMalloc(&attn->d_Q, seq_batch_size * sizeof(half)));
     CHECK_CUDA(cudaMalloc(&attn->d_K, seq_batch_size * sizeof(half)));
     CHECK_CUDA(cudaMalloc(&attn->d_V, seq_batch_size * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&attn->d_Q_mh, seq_batch_size * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&attn->d_K_mh, seq_batch_size * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&attn->d_V_mh, seq_batch_size * sizeof(half)));
     CHECK_CUDA(cudaMalloc(&attn->d_scores, attn_matrix_size * sizeof(half)));
     CHECK_CUDA(cudaMalloc(&attn->d_attn_weights, attn_matrix_size * sizeof(half)));
+    CHECK_CUDA(cudaMalloc(&attn->d_attn_output_mh, seq_batch_size * sizeof(half)));
     CHECK_CUDA(cudaMalloc(&attn->d_attn_output, seq_batch_size * sizeof(half)));
     CHECK_CUDA(cudaMalloc(&attn->d_output, seq_batch_size * sizeof(half)));
     
     // Alias/Allocate device memory for backward pass buffers
     attn->d_grad_output = attn->d_output;
     attn->d_grad_attn_output = attn->d_attn_output;
+    attn->d_grad_attn_output_mh = attn->d_attn_output_mh;
     CHECK_CUDA(cudaMalloc(&attn->d_grad_weights, attn_matrix_size * sizeof(half)));
     attn->d_grad_scores = attn->d_scores;
-    attn->d_grad_Q = attn->d_attn_output;
+    attn->d_grad_Q_mh = attn->d_attn_output_mh;
+    attn->d_grad_K_mh = attn->d_K_mh;
+    attn->d_grad_V_mh = attn->d_V_mh;
+    attn->d_grad_Q = attn->d_Q;
     attn->d_grad_K = attn->d_K;
     attn->d_grad_V = attn->d_V;
     
@@ -115,19 +125,20 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->seq_flat_layout, CUDA_R_16F, batch_size * seq_len, d_model, d_model));
     CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->seq_flat_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
     
-    // 3. Sequence data [seq_len x d_model] - batched
-    int64_t seq_batch_stride = seq_len * d_model;
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->seq_batch_layout, CUDA_R_16F, seq_len, d_model, d_model));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->seq_batch_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->seq_batch_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->seq_batch_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &seq_batch_stride, sizeof(seq_batch_stride)));
+    // 3. Multi-head sequence data [seq_len x d_k] - batched by batch_size * num_heads
+    int total_heads = batch_size * num_heads;
+    int64_t seq_head_stride = seq_len * attn->d_k;
+    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->seq_head_layout, CUDA_R_16F, seq_len, attn->d_k, attn->d_k));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->seq_head_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->seq_head_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &total_heads, sizeof(total_heads)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->seq_head_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &seq_head_stride, sizeof(seq_head_stride)));
     
-    // 4. Attention matrices [seq_len x seq_len] - batched
-    int64_t attn_batch_stride = seq_len * seq_len;
-    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->attn_batch_layout, CUDA_R_16F, seq_len, seq_len, seq_len));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->attn_batch_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->attn_batch_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &batch_size, sizeof(batch_size)));
-    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->attn_batch_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &attn_batch_stride, sizeof(attn_batch_stride)));
+    // 4. Attention matrices [seq_len x seq_len] - batched by batch_size * num_heads
+    int64_t attn_head_stride = seq_len * seq_len;
+    CHECK_CUBLASLT(cublasLtMatrixLayoutCreate(&attn->attn_head_layout, CUDA_R_16F, seq_len, seq_len, seq_len));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->attn_head_layout, CUBLASLT_MATRIX_LAYOUT_ORDER, &order, sizeof(order)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->attn_head_layout, CUBLASLT_MATRIX_LAYOUT_BATCH_COUNT, &total_heads, sizeof(total_heads)));
+    CHECK_CUBLASLT(cublasLtMatrixLayoutSetAttribute(attn->attn_head_layout, CUBLASLT_MATRIX_LAYOUT_STRIDED_BATCH_OFFSET, &attn_head_stride, sizeof(attn_head_stride)));
     
     // Free host memory
     free(h_W_q); free(h_W_k); free(h_W_v); free(h_W_o);
@@ -143,8 +154,8 @@ void free_attention(Attention* attn) {
     // Destroy matrix layouts
     cublasLtMatrixLayoutDestroy(attn->weight_layout);
     cublasLtMatrixLayoutDestroy(attn->seq_flat_layout);
-    cublasLtMatrixLayoutDestroy(attn->seq_batch_layout);
-    cublasLtMatrixLayoutDestroy(attn->attn_batch_layout);
+    cublasLtMatrixLayoutDestroy(attn->seq_head_layout);
+    cublasLtMatrixLayoutDestroy(attn->attn_head_layout);
     
     // Free device memory
     cudaFree(attn->d_W_q); cudaFree(attn->d_W_k); cudaFree(attn->d_W_v); cudaFree(attn->d_W_o);
@@ -152,8 +163,9 @@ void free_attention(Attention* attn) {
     cudaFree(attn->d_W_q_m); cudaFree(attn->d_W_q_v); cudaFree(attn->d_W_k_m); cudaFree(attn->d_W_k_v);
     cudaFree(attn->d_W_v_m); cudaFree(attn->d_W_v_v); cudaFree(attn->d_W_o_m); cudaFree(attn->d_W_o_v);
     cudaFree(attn->d_Q); cudaFree(attn->d_K); cudaFree(attn->d_V);
+    cudaFree(attn->d_Q_mh); cudaFree(attn->d_K_mh); cudaFree(attn->d_V_mh);
     cudaFree(attn->d_scores); cudaFree(attn->d_attn_weights);
-    cudaFree(attn->d_attn_output); cudaFree(attn->d_output);
+    cudaFree(attn->d_attn_output_mh); cudaFree(attn->d_attn_output); cudaFree(attn->d_output);
     cudaFree(attn->d_grad_weights);
     
     // Free loss computation buffer
@@ -162,51 +174,79 @@ void free_attention(Attention* attn) {
     free(attn);
 }
 
-// CUDA kernel for softmax forward pass
-__global__ static void softmax_forward_kernel_attention(half* weights, half* scores, int batch_size, int seq_len) {
+// CUDA kernel for transpose [B, L, H*dk] -> [B*H, L, dk]
+__global__ static void transpose_to_multihead_kernel(half* out, half* in, int batch_size, int seq_len, int num_heads, int d_k) {
     int b = blockIdx.x;
+    int h = blockIdx.y;
+    int l = blockIdx.z;
+    int k = threadIdx.x;
+    
+    if (b >= batch_size || h >= num_heads || l >= seq_len || k >= d_k) return;
+    
+    int in_idx = b * seq_len * num_heads * d_k + l * num_heads * d_k + h * d_k + k;
+    int out_idx = (b * num_heads + h) * seq_len * d_k + l * d_k + k;
+    out[out_idx] = in[in_idx];
+}
+
+// CUDA kernel for transpose [B*H, L, dk] -> [B, L, H*dk]
+__global__ static void transpose_from_multihead_kernel(half* out, half* in, int batch_size, int seq_len, int num_heads, int d_k) {
+    int b = blockIdx.x;
+    int h = blockIdx.y;
+    int l = blockIdx.z;
+    int k = threadIdx.x;
+    
+    if (b >= batch_size || h >= num_heads || l >= seq_len || k >= d_k) return;
+    
+    int in_idx = (b * num_heads + h) * seq_len * d_k + l * d_k + k;
+    int out_idx = b * seq_len * num_heads * d_k + l * num_heads * d_k + h * d_k + k;
+    out[out_idx] = in[in_idx];
+}
+
+// CUDA kernel for softmax forward pass
+__global__ static void softmax_forward_kernel_attention(half* weights, half* scores, int total_heads, int seq_len) {
+    int bh = blockIdx.x;
     int i = blockIdx.y;
     
-    if (b >= batch_size || i >= seq_len) return;
+    if (bh >= total_heads || i >= seq_len) return;
     
-    half* scores_b = &scores[b * seq_len * seq_len];
-    half* weights_b = &weights[b * seq_len * seq_len];
+    half* scores_bh = &scores[bh * seq_len * seq_len];
+    half* weights_bh = &weights[bh * seq_len * seq_len];
     
     // Find max for numerical stability
     float max_val = -1e30f;
     for (int j = 0; j < seq_len; j++) {
-        float val = __half2float(scores_b[i * seq_len + j]);
+        float val = __half2float(scores_bh[i * seq_len + j]);
         if (val > max_val) max_val = val;
     }
     
     // A_ij = exp(S_ij)/∑_k exp(S_ik)
     float sum_exp = 0.0f;
     for (int j = 0; j < seq_len; j++) {
-        float exp_val = expf(__half2float(scores_b[i * seq_len + j]) - max_val);
-        weights_b[i * seq_len + j] = __float2half(exp_val);
+        float exp_val = expf(__half2float(scores_bh[i * seq_len + j]) - max_val);
+        weights_bh[i * seq_len + j] = __float2half(exp_val);
         sum_exp += exp_val;
     }
     
     // Normalize
     for (int j = 0; j < seq_len; j++) {
-        weights_b[i * seq_len + j] = __float2half(__half2float(weights_b[i * seq_len + j]) / sum_exp);
+        weights_bh[i * seq_len + j] = __float2half(__half2float(weights_bh[i * seq_len + j]) / sum_exp);
     }
 }
 
 // CUDA kernel for causal softmax forward pass
-__global__ static void softmax_causal_forward_kernel_attention(half* weights, half* scores, int batch_size, int seq_len) {
-    int b = blockIdx.x;
+__global__ static void softmax_causal_forward_kernel_attention(half* weights, half* scores, int total_heads, int seq_len) {
+    int bh = blockIdx.x;
     int i = blockIdx.y;
     
-    if (b >= batch_size || i >= seq_len) return;
+    if (bh >= total_heads || i >= seq_len) return;
     
-    half* scores_b = &scores[b * seq_len * seq_len];
-    half* weights_b = &weights[b * seq_len * seq_len];
+    half* scores_bh = &scores[bh * seq_len * seq_len];
+    half* weights_bh = &weights[bh * seq_len * seq_len];
     
     // Find max for numerical stability (only consider positions <= i)
     float max_val = -1e30f;
     for (int j = 0; j <= i; j++) {
-        float val = __half2float(scores_b[i * seq_len + j]);
+        float val = __half2float(scores_bh[i * seq_len + j]);
         if (val > max_val) max_val = val;
     }
     
@@ -214,93 +254,93 @@ __global__ static void softmax_causal_forward_kernel_attention(half* weights, ha
     float sum_exp = 0.0f;
     for (int j = 0; j < seq_len; j++) {
         if (j <= i) {
-            float exp_val = expf(__half2float(scores_b[i * seq_len + j]) - max_val);
-            weights_b[i * seq_len + j] = __float2half(exp_val);
+            float exp_val = expf(__half2float(scores_bh[i * seq_len + j]) - max_val);
+            weights_bh[i * seq_len + j] = __float2half(exp_val);
             sum_exp += exp_val;
         } else {
-            weights_b[i * seq_len + j] = __float2half(0.0f);
+            weights_bh[i * seq_len + j] = __float2half(0.0f);
         }
     }
     
     // Normalize only the valid positions
     for (int j = 0; j <= i; j++) {
-        weights_b[i * seq_len + j] = __float2half(__half2float(weights_b[i * seq_len + j]) / sum_exp);
+        weights_bh[i * seq_len + j] = __float2half(__half2float(weights_bh[i * seq_len + j]) / sum_exp);
     }
 }
 
 // CUDA kernel for softmax backward pass
-__global__ static void softmax_backward_kernel_attention(half* grad_scores, half* grad_weights, half* weights, int batch_size, int seq_len) {
-    int b = blockIdx.x;
+__global__ static void softmax_backward_kernel_attention(half* grad_scores, half* grad_weights, half* weights, int total_heads, int seq_len) {
+    int bh = blockIdx.x;
     int i = blockIdx.y;
     
-    if (b >= batch_size || i >= seq_len) return;
+    if (bh >= total_heads || i >= seq_len) return;
     
-    half* grad_weights_b = &grad_weights[b * seq_len * seq_len];
-    half* weights_b = &weights[b * seq_len * seq_len];
-    half* grad_scores_b = &grad_scores[b * seq_len * seq_len];
+    half* grad_weights_bh = &grad_weights[bh * seq_len * seq_len];
+    half* weights_bh = &weights[bh * seq_len * seq_len];
+    half* grad_scores_bh = &grad_scores[bh * seq_len * seq_len];
     
     // Compute ∑_j ∂L/∂A⊙A
     float sum_term = 0.0f;
     for (int k = 0; k < seq_len; k++) {
         int idx = i * seq_len + k;
-        sum_term += __half2float(grad_weights_b[idx]) * __half2float(weights_b[idx]);
+        sum_term += __half2float(grad_weights_bh[idx]) * __half2float(weights_bh[idx]);
     }
     
     // ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A)
     for (int j = 0; j < seq_len; j++) {
         int idx = i * seq_len + j;
-        float result = __half2float(weights_b[idx]) * (__half2float(grad_weights_b[idx]) - sum_term);
-        grad_scores_b[idx] = __float2half(result);
+        float result = __half2float(weights_bh[idx]) * (__half2float(grad_weights_bh[idx]) - sum_term);
+        grad_scores_bh[idx] = __float2half(result);
     }
 }
 
 // CUDA kernel for causal softmax backward pass
-__global__ static void softmax_causal_backward_kernel_attention(half* grad_scores, half* grad_weights, half* weights, int batch_size, int seq_len) {
-    int b = blockIdx.x;
+__global__ static void softmax_causal_backward_kernel_attention(half* grad_scores, half* grad_weights, half* weights, int total_heads, int seq_len) {
+    int bh = blockIdx.x;
     int i = blockIdx.y;
     
-    if (b >= batch_size || i >= seq_len) return;
+    if (bh >= total_heads || i >= seq_len) return;
     
-    half* grad_weights_b = &grad_weights[b * seq_len * seq_len];
-    half* weights_b = &weights[b * seq_len * seq_len];
-    half* grad_scores_b = &grad_scores[b * seq_len * seq_len];
+    half* grad_weights_bh = &grad_weights[bh * seq_len * seq_len];
+    half* weights_bh = &weights[bh * seq_len * seq_len];
+    half* grad_scores_bh = &grad_scores[bh * seq_len * seq_len];
     
     // Compute ∑_j ∂L/∂A⊙A (only for j <= i)
     float sum_term = 0.0f;
     for (int k = 0; k <= i; k++) {
         int idx = i * seq_len + k;
-        sum_term += __half2float(grad_weights_b[idx]) * __half2float(weights_b[idx]);
+        sum_term += __half2float(grad_weights_bh[idx]) * __half2float(weights_bh[idx]);
     }
     
     // ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A) for j <= i, 0 for j > i
     for (int j = 0; j < seq_len; j++) {
         int idx = i * seq_len + j;
         if (j <= i) {
-            float result = __half2float(weights_b[idx]) * (__half2float(grad_weights_b[idx]) - sum_term);
-            grad_scores_b[idx] = __float2half(result);
+            float result = __half2float(weights_bh[idx]) * (__half2float(grad_weights_bh[idx]) - sum_term);
+            grad_scores_bh[idx] = __float2half(result);
         } else {
-            grad_scores_b[idx] = __float2half(0.0f);
+            grad_scores_bh[idx] = __float2half(0.0f);
         }
     }
 }
 
 // CUDA kernel for RoPE forward pass
-__global__ static void rope_forward_kernel_attention(half* Q, half* K, int batch_size, int seq_len, int d_model) {
-    int b = blockIdx.x;
+__global__ static void rope_forward_kernel_attention(half* Q, half* K, int total_heads, int seq_len, int d_k) {
+    int bh = blockIdx.x;
     int t = blockIdx.y;
     int d_pair = threadIdx.x;
     
-    if (b >= batch_size || t >= seq_len || d_pair >= d_model / 2) return;
+    if (bh >= total_heads || t >= seq_len || d_pair >= d_k / 2) return;
     
     int d = d_pair * 2;
     
     // Compute rotation angle
-    float theta = powf(10000.0f, -((float)d / (float)d_model));
+    float theta = powf(10000.0f, -((float)d / (float)d_k));
     float angle = (float)t * theta;
     float cos_a = cosf(angle);
     float sin_a = sinf(angle);
     
-    int idx = b * seq_len * d_model + t * d_model + d;
+    int idx = bh * seq_len * d_k + t * d_k + d;
     
     // Rotate Q
     float q0 = __half2float(Q[idx]);
@@ -316,22 +356,22 @@ __global__ static void rope_forward_kernel_attention(half* Q, half* K, int batch
 }
 
 // CUDA kernel for RoPE backward pass
-__global__ static void rope_backward_kernel_attention(half* grad_Q, half* grad_K, int batch_size, int seq_len, int d_model) {
-    int b = blockIdx.x;
+__global__ static void rope_backward_kernel_attention(half* grad_Q, half* grad_K, int total_heads, int seq_len, int d_k) {
+    int bh = blockIdx.x;
     int t = blockIdx.y;
     int d_pair = threadIdx.x;
     
-    if (b >= batch_size || t >= seq_len || d_pair >= d_model / 2) return;
+    if (bh >= total_heads || t >= seq_len || d_pair >= d_k / 2) return;
     
     int d = d_pair * 2;
     
     // Compute rotation angle
-    float theta = powf(10000.0f, -((float)d / (float)d_model));
+    float theta = powf(10000.0f, -((float)d / (float)d_k));
     float angle = (float)t * theta;
     float cos_a = cosf(angle);
     float sin_a = sinf(angle);
     
-    int idx = b * seq_len * d_model + t * d_model + d;
+    int idx = bh * seq_len * d_k + t * d_k + d;
     
     // Inverse rotate grad_Q
     float gq0 = __half2float(grad_Q[idx]);
@@ -350,6 +390,7 @@ __global__ static void rope_backward_kernel_attention(half* grad_Q, half* grad_K
 void forward_pass_attention(Attention* attn, half* d_X) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
+    int total_heads = attn->batch_size * attn->num_heads;
     
     // Step 1: Compute Q, K, V using flattened operations
     // Q = XW_q (flattened: [B * L x D] * [D x D] -> [B * L x D])
@@ -370,33 +411,42 @@ void forward_pass_attention(Attention* attn, half* d_X) {
               attn->d_W_v, attn->weight_layout,
               &beta, attn->d_V, attn->seq_flat_layout);
     
+    // Step 1.5: Transpose Q, K, V from [B, L, H*dk] to [B*H, L, dk]
+    dim3 transpose_grid(attn->batch_size, attn->num_heads, attn->seq_len);
+    transpose_to_multihead_kernel<<<transpose_grid, attn->d_k>>>(attn->d_Q_mh, attn->d_Q, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_k);
+    transpose_to_multihead_kernel<<<transpose_grid, attn->d_k>>>(attn->d_K_mh, attn->d_K, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_k);
+    transpose_to_multihead_kernel<<<transpose_grid, attn->d_k>>>(attn->d_V_mh, attn->d_V, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_k);
+    
     // Step 2: Apply RoPE to Q and K
     if (attn->use_rope) {
-        dim3 grid(attn->batch_size, attn->seq_len);
-        rope_forward_kernel_attention<<<grid, attn->d_model / 2>>>(attn->d_Q, attn->d_K, attn->batch_size, attn->seq_len, attn->d_model);
+        dim3 grid(total_heads, attn->seq_len);
+        rope_forward_kernel_attention<<<grid, attn->d_k / 2>>>(attn->d_Q_mh, attn->d_K_mh, total_heads, attn->seq_len, attn->d_k);
     }
     
-    // Step 3: Compute attention scores (batched: [L x D] * [D x L] -> [L x L])
-    // S = QKᵀ/√d_model
+    // Step 3: Compute attention scores (batched: [L x dk] * [dk x L] -> [L x L])
+    // S = QKᵀ/√d_k
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &attn->scale,
-              attn->d_Q, attn->seq_batch_layout,
-              attn->d_K, attn->seq_batch_layout,
-              &beta, attn->d_scores, attn->attn_batch_layout);
+              attn->d_Q_mh, attn->seq_head_layout,
+              attn->d_K_mh, attn->seq_head_layout,
+              &beta, attn->d_scores, attn->attn_head_layout);
     
     // Step 4: Apply softmax
-    dim3 grid(attn->batch_size, attn->seq_len);
+    dim3 grid(total_heads, attn->seq_len);
     if (attn->is_causal) {
-        softmax_causal_forward_kernel_attention<<<grid, 1>>>(attn->d_attn_weights, attn->d_scores, attn->batch_size, attn->seq_len);
+        softmax_causal_forward_kernel_attention<<<grid, 1>>>(attn->d_attn_weights, attn->d_scores, total_heads, attn->seq_len);
     } else {
-        softmax_forward_kernel_attention<<<grid, 1>>>(attn->d_attn_weights, attn->d_scores, attn->batch_size, attn->seq_len);
+        softmax_forward_kernel_attention<<<grid, 1>>>(attn->d_attn_weights, attn->d_scores, total_heads, attn->seq_len);
     }
     
-    // Step 5: Compute attention output (batched: [L x L] * [L x D] -> [L x D])
+    // Step 5: Compute attention output (batched: [L x L] * [L x dk] -> [L x dk])
     // Z = AV
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &alpha,
-              attn->d_attn_weights, attn->attn_batch_layout,
-              attn->d_V, attn->seq_batch_layout,
-              &beta, attn->d_attn_output, attn->seq_batch_layout);
+              attn->d_attn_weights, attn->attn_head_layout,
+              attn->d_V_mh, attn->seq_head_layout,
+              &beta, attn->d_attn_output_mh, attn->seq_head_layout);
+    
+    // Step 5.5: Transpose attention output from [B*H, L, dk] to [B, L, H*dk]
+    transpose_from_multihead_kernel<<<transpose_grid, attn->d_k>>>(attn->d_attn_output, attn->d_attn_output_mh, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_k);
     
     // Step 6: Apply output projection (flattened: [B * L x D] * [D x D] -> [B * L x D])
     // Y = ZW_o
@@ -454,6 +504,8 @@ void zero_gradients_attention(Attention* attn) {
 void backward_pass_attention(Attention* attn, half* d_X, half* d_grad_X) {
     const float alpha = 1.0f;
     const float beta = 0.0f;
+    int total_heads = attn->batch_size * attn->num_heads;
+    dim3 transpose_grid(attn->batch_size, attn->num_heads, attn->seq_len);
     
     // Step 6 (backward): Gradient through output projection
     // ∂L/∂W_o = Zᵀ(∂L/∂Y) (flattened)
@@ -468,45 +520,53 @@ void backward_pass_attention(Attention* attn, half* d_X, half* d_grad_X) {
               attn->d_W_o, attn->weight_layout,
               &beta, attn->d_grad_attn_output, attn->seq_flat_layout);
     
+    // Step 5.5 (backward): Transpose grad_attn_output from [B, L, H*dk] to [B*H, L, dk]
+    transpose_to_multihead_kernel<<<transpose_grid, attn->d_k>>>(attn->d_grad_attn_output_mh, attn->d_grad_attn_output, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_k);
+    
     // Step 5 (backward): Gradient through attention output computation
     // ∂L/∂A = (∂L/∂Z)Vᵀ (batched)
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_T, &alpha,
-              attn->d_grad_attn_output, attn->seq_batch_layout,
-              attn->d_V, attn->seq_batch_layout,
-              &beta, attn->d_grad_weights, attn->attn_batch_layout);
+              attn->d_grad_attn_output_mh, attn->seq_head_layout,
+              attn->d_V_mh, attn->seq_head_layout,
+              &beta, attn->d_grad_weights, attn->attn_head_layout);
     
     // ∂L/∂V = Aᵀ(∂L/∂Z) (batched)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &alpha,
-              attn->d_attn_weights, attn->attn_batch_layout,
-              attn->d_grad_attn_output, attn->seq_batch_layout,
-              &beta, attn->d_grad_V, attn->seq_batch_layout);
+              attn->d_attn_weights, attn->attn_head_layout,
+              attn->d_grad_attn_output_mh, attn->seq_head_layout,
+              &beta, attn->d_grad_V_mh, attn->seq_head_layout);
     
     // Step 4 (backward): Gradient through softmax
-    dim3 grid(attn->batch_size, attn->seq_len);
+    dim3 grid(total_heads, attn->seq_len);
     if (attn->is_causal) {
-        softmax_causal_backward_kernel_attention<<<grid, 1>>>(attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->seq_len);
+        softmax_causal_backward_kernel_attention<<<grid, 1>>>(attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, total_heads, attn->seq_len);
     } else {
-        softmax_backward_kernel_attention<<<grid, 1>>>(attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->batch_size, attn->seq_len);
+        softmax_backward_kernel_attention<<<grid, 1>>>(attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, total_heads, attn->seq_len);
     }
     
     // Step 3 (backward): Gradient through attention scores
-    // ∂L/∂Q = (∂L/∂S)K/√d_model (batched)
+    // ∂L/∂Q = (∂L/∂S)K/√d_k (batched)
     LT_MATMUL(attn, CUBLAS_OP_N, CUBLAS_OP_N, &attn->scale,
-              attn->d_grad_scores, attn->attn_batch_layout,
-              attn->d_K, attn->seq_batch_layout,
-              &beta, attn->d_grad_Q, attn->seq_batch_layout);
+              attn->d_grad_scores, attn->attn_head_layout,
+              attn->d_K_mh, attn->seq_head_layout,
+              &beta, attn->d_grad_Q_mh, attn->seq_head_layout);
     
-    // ∂L/∂K = (∂L/∂S)ᵀQ/√d_model (batched)
+    // ∂L/∂K = (∂L/∂S)ᵀQ/√d_k (batched)
     LT_MATMUL(attn, CUBLAS_OP_T, CUBLAS_OP_N, &attn->scale,
-              attn->d_grad_scores, attn->attn_batch_layout,
-              attn->d_Q, attn->seq_batch_layout,
-              &beta, attn->d_grad_K, attn->seq_batch_layout);
+              attn->d_grad_scores, attn->attn_head_layout,
+              attn->d_Q_mh, attn->seq_head_layout,
+              &beta, attn->d_grad_K_mh, attn->seq_head_layout);
     
     // Step 2 (backward): Apply inverse RoPE to grad_Q and grad_K
     if (attn->use_rope) {
-        dim3 grid_rope(attn->batch_size, attn->seq_len);
-        rope_backward_kernel_attention<<<grid_rope, attn->d_model / 2>>>(attn->d_grad_Q, attn->d_grad_K, attn->batch_size, attn->seq_len, attn->d_model);
+        dim3 grid_rope(total_heads, attn->seq_len);
+        rope_backward_kernel_attention<<<grid_rope, attn->d_k / 2>>>(attn->d_grad_Q_mh, attn->d_grad_K_mh, total_heads, attn->seq_len, attn->d_k);
     }
+    
+    // Step 1.5 (backward): Transpose gradients from [B*H, L, dk] to [B, L, H*dk]
+    transpose_from_multihead_kernel<<<transpose_grid, attn->d_k>>>(attn->d_grad_Q, attn->d_grad_Q_mh, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_k);
+    transpose_from_multihead_kernel<<<transpose_grid, attn->d_k>>>(attn->d_grad_K, attn->d_grad_K_mh, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_k);
+    transpose_from_multihead_kernel<<<transpose_grid, attn->d_k>>>(attn->d_grad_V, attn->d_grad_V_mh, attn->batch_size, attn->seq_len, attn->num_heads, attn->d_k);
     
     // Step 1 (backward): Gradient through linear projections
     // ∂L/∂W_q = Xᵀ(∂L/∂Q) (flattened)
@@ -618,6 +678,7 @@ void reset_optimizer_attention(Attention* attn) {
 void serialize_attention(Attention* attn, FILE* file) {
     // Write dimension
     fwrite(&attn->d_model, sizeof(int), 1, file);
+    fwrite(&attn->num_heads, sizeof(int), 1, file);
     fwrite(&attn->is_causal, sizeof(bool), 1, file);
     fwrite(&attn->use_rope, sizeof(bool), 1, file);
     
@@ -684,14 +745,15 @@ void serialize_attention(Attention* attn, FILE* file) {
 // Deserialize attention from file
 Attention* deserialize_attention(FILE* file, int batch_size, int seq_len, cublasLtHandle_t cublaslt_handle) {
     // Read dimension
-    int d_model;
+    int d_model, num_heads;
     bool is_causal, use_rope;
     fread(&d_model, sizeof(int), 1, file);
+    fread(&num_heads, sizeof(int), 1, file);
     fread(&is_causal, sizeof(bool), 1, file);
     fread(&use_rope, sizeof(bool), 1, file);
     
     // Initialize attention
-    Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, use_rope, cublaslt_handle);
+    Attention* attn = init_attention(seq_len, d_model, num_heads, batch_size, is_causal, use_rope, cublaslt_handle);
     
     int weight_size = d_model * d_model;
     
