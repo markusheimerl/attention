@@ -624,10 +624,10 @@ void serialize_attention(Attention* attn, FILE* file) {
     int weight_size = attn->d_model * attn->d_model;
     
     // Allocate host buffers for weights
-    half* h_W_q = (half*)malloc(weight_size * sizeof(half));
-    half* h_W_k = (half*)malloc(weight_size * sizeof(half));
-    half* h_W_v = (half*)malloc(weight_size * sizeof(half));
-    half* h_W_o = (half*)malloc(weight_size * sizeof(half));
+    float* h_W_q = (float*)malloc(weight_size * sizeof(float));
+    float* h_W_k = (float*)malloc(weight_size * sizeof(float));
+    float* h_W_v = (float*)malloc(weight_size * sizeof(float));
+    float* h_W_o = (float*)malloc(weight_size * sizeof(float));
     
     // Copy weights from device
     CHECK_CUDA(cudaMemcpy(h_W_q, attn->d_W_q, weight_size * sizeof(half), cudaMemcpyDeviceToHost));
@@ -635,11 +635,19 @@ void serialize_attention(Attention* attn, FILE* file) {
     CHECK_CUDA(cudaMemcpy(h_W_v, attn->d_W_v, weight_size * sizeof(half), cudaMemcpyDeviceToHost));
     CHECK_CUDA(cudaMemcpy(h_W_o, attn->d_W_o, weight_size * sizeof(half), cudaMemcpyDeviceToHost));
     
+    // Convert half to float
+    for (int i = weight_size - 1; i >= 0; i--) {
+        h_W_q[i] = __half2float(((half*)h_W_q)[i]);
+        h_W_k[i] = __half2float(((half*)h_W_k)[i]);
+        h_W_v[i] = __half2float(((half*)h_W_v)[i]);
+        h_W_o[i] = __half2float(((half*)h_W_o)[i]);
+    }
+    
     // Write weights
-    fwrite(h_W_q, sizeof(half), weight_size, file);
-    fwrite(h_W_k, sizeof(half), weight_size, file);
-    fwrite(h_W_v, sizeof(half), weight_size, file);
-    fwrite(h_W_o, sizeof(half), weight_size, file);
+    fwrite(h_W_q, sizeof(float), weight_size, file);
+    fwrite(h_W_k, sizeof(float), weight_size, file);
+    fwrite(h_W_v, sizeof(float), weight_size, file);
+    fwrite(h_W_o, sizeof(float), weight_size, file);
     
     free(h_W_q); free(h_W_k); free(h_W_v); free(h_W_o);
     
@@ -696,16 +704,24 @@ Attention* deserialize_attention(FILE* file, int batch_size, int seq_len, cublas
     int weight_size = d_model * d_model;
     
     // Allocate host buffers for weights
-    half* h_W_q = (half*)malloc(weight_size * sizeof(half));
-    half* h_W_k = (half*)malloc(weight_size * sizeof(half));
-    half* h_W_v = (half*)malloc(weight_size * sizeof(half));
-    half* h_W_o = (half*)malloc(weight_size * sizeof(half));
+    float* h_W_q = (float*)malloc(weight_size * sizeof(float));
+    float* h_W_k = (float*)malloc(weight_size * sizeof(float));
+    float* h_W_v = (float*)malloc(weight_size * sizeof(float));
+    float* h_W_o = (float*)malloc(weight_size * sizeof(float));
     
     // Read weights
-    fread(h_W_q, sizeof(half), weight_size, file);
-    fread(h_W_k, sizeof(half), weight_size, file);
-    fread(h_W_v, sizeof(half), weight_size, file);
-    fread(h_W_o, sizeof(half), weight_size, file);
+    fread(h_W_q, sizeof(float), weight_size, file);
+    fread(h_W_k, sizeof(float), weight_size, file);
+    fread(h_W_v, sizeof(float), weight_size, file);
+    fread(h_W_o, sizeof(float), weight_size, file);
+    
+    // Convert float to half
+    for (int i = 0; i < weight_size; i++) {
+        ((half*)h_W_q)[i] = __float2half(h_W_q[i]);
+        ((half*)h_W_k)[i] = __float2half(h_W_k[i]);
+        ((half*)h_W_v)[i] = __float2half(h_W_v[i]);
+        ((half*)h_W_o)[i] = __float2half(h_W_o[i]);
+    }
     
     // Copy weights to device
     CHECK_CUDA(cudaMemcpy(attn->d_W_q, h_W_q, weight_size * sizeof(half), cudaMemcpyHostToDevice));
