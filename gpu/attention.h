@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <cublasLt.h>
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 
 // CUDA Error checking macro
 #ifndef CHECK_CUDA
@@ -50,16 +51,16 @@
 
 typedef struct {
     // Device weights for attention mechanism
-    float* d_W_q;      // Query projection [d_model x d_model]
-    float* d_W_k;      // Key projection [d_model x d_model]
-    float* d_W_v;      // Value projection [d_model x d_model]
-    float* d_W_o;      // Output projection [d_model x d_model]
+    half* d_W_q;      // Query projection [d_model x d_model]
+    half* d_W_k;      // Key projection [d_model x d_model]
+    half* d_W_v;      // Value projection [d_model x d_model]
+    half* d_W_o;      // Output projection [d_model x d_model]
     
     // Device gradients
-    float* d_W_q_grad; // [d_model x d_model]
-    float* d_W_k_grad; // [d_model x d_model]
-    float* d_W_v_grad; // [d_model x d_model]
-    float* d_W_o_grad; // [d_model x d_model]
+    half* d_W_q_grad; // [d_model x d_model]
+    half* d_W_k_grad; // [d_model x d_model]
+    half* d_W_v_grad; // [d_model x d_model]
+    half* d_W_o_grad; // [d_model x d_model]
     
     // Adam parameters
     float* d_W_q_m, *d_W_q_v;  // First and second moments for W_q
@@ -73,22 +74,22 @@ typedef struct {
     float weight_decay;        // Weight decay parameter for AdamW
     
     // Forward pass buffers
-    float* d_Q;            // Query matrix [batch_size x seq_len x d_model]
-    float* d_K;            // Key matrix [batch_size x seq_len x d_model]
-    float* d_V;            // Value matrix [batch_size x seq_len x d_model]
-    float* d_scores;       // Attention scores [batch_size x seq_len x seq_len]
-    float* d_attn_weights; // Attention weights [batch_size x seq_len x seq_len]
-    float* d_attn_output;  // Attention output [batch_size x seq_len x d_model]
-    float* d_output;       // Final output [batch_size x seq_len x d_model]
+    half* d_Q;            // Query matrix [batch_size x seq_len x d_model]
+    half* d_K;            // Key matrix [batch_size x seq_len x d_model]
+    half* d_V;            // Value matrix [batch_size x seq_len x d_model]
+    half* d_scores;       // Attention scores [batch_size x seq_len x seq_len]
+    half* d_attn_weights; // Attention weights [batch_size x seq_len x seq_len]
+    half* d_attn_output;  // Attention output [batch_size x seq_len x d_model]
+    half* d_output;       // Final output [batch_size x seq_len x d_model]
     
     // Backward pass buffers
-    float* d_grad_output;      // [batch_size x seq_len x d_model]
-    float* d_grad_attn_output; // [batch_size x seq_len x d_model]
-    float* d_grad_weights;     // [batch_size x seq_len x seq_len]
-    float* d_grad_scores;      // [batch_size x seq_len x seq_len]
-    float* d_grad_Q;           // [batch_size x seq_len x d_model]
-    float* d_grad_K;           // [batch_size x seq_len x d_model]
-    float* d_grad_V;           // [batch_size x seq_len x d_model]
+    half* d_grad_output;      // [batch_size x seq_len x d_model]
+    half* d_grad_attn_output; // [batch_size x seq_len x d_model]
+    half* d_grad_weights;     // [batch_size x seq_len x seq_len]
+    half* d_grad_scores;      // [batch_size x seq_len x seq_len]
+    half* d_grad_Q;           // [batch_size x seq_len x d_model]
+    half* d_grad_K;           // [batch_size x seq_len x d_model]
+    half* d_grad_V;           // [batch_size x seq_len x d_model]
 
     // Loss computation buffer
     float* d_loss_result;      // [1]
@@ -115,10 +116,10 @@ typedef struct {
 // Function prototypes
 Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, bool use_rope, cublasLtHandle_t cublaslt_handle);
 void free_attention(Attention* attn);
-void forward_pass_attention(Attention* attn, float* d_X);
-float calculate_loss_attention(Attention* attn, float* d_y);
+void forward_pass_attention(Attention* attn, half* d_X);
+float calculate_loss_attention(Attention* attn, half* d_y);
 void zero_gradients_attention(Attention* attn);
-void backward_pass_attention(Attention* attn, float* d_X, float* d_grad_X);
+void backward_pass_attention(Attention* attn, half* d_X, half* d_grad_X);
 void update_weights_attention(Attention* attn, float learning_rate, int batch_size);
 void reset_optimizer_attention(Attention* attn);
 void serialize_attention(Attention* attn, FILE* file);
