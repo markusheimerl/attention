@@ -188,14 +188,14 @@ __global__ static void softmax_forward_kernel_attention(half* weights, half* sco
     int warp_id = tid >> 5, lane_id = tid & 31, nwarps = nthreads >> 5;
     
     // Find max for numerical stability
-    float val = -INFINITY;
+    float val = -1e30;
     for (int j = tid; j < seq_len; j += nthreads) val = fmaxf(val, __half2float(scores_m[j]));
     #pragma unroll
     for (int offset = 16; offset > 0; offset >>= 1) val = fmaxf(val, __shfl_xor_sync(0xffffffff, val, offset));
     if (lane_id == 0) smem[warp_id] = val;
     __syncthreads();
     if (warp_id == 0) {
-        val = (lane_id < nwarps) ? smem[lane_id] : -INFINITY;
+        val = (lane_id < nwarps) ? smem[lane_id] : -1e30;
         #pragma unroll
         for (int offset = 16; offset > 0; offset >>= 1) val = fmaxf(val, __shfl_xor_sync(0xffffffff, val, offset));
         if (lane_id == 0) smem[0] = val;
@@ -246,14 +246,14 @@ __global__ static void softmax_causal_forward_kernel_attention(half* weights, ha
     int valid_len = i + 1;
     
     // Find max for numerical stability (only consider positions <= i)
-    float val = -INFINITY;
+    float val = -1e30;
     for (int j = tid; j < valid_len; j += nthreads) val = fmaxf(val, __half2float(scores_m[j]));
     #pragma unroll
     for (int offset = 16; offset > 0; offset >>= 1) val = fmaxf(val, __shfl_xor_sync(0xffffffff, val, offset));
     if (lane_id == 0) smem[warp_id] = val;
     __syncthreads();
     if (warp_id == 0) {
-        val = (lane_id < nwarps) ? smem[lane_id] : -INFINITY;
+        val = (lane_id < nwarps) ? smem[lane_id] : -1e30;
         #pragma unroll
         for (int offset = 16; offset > 0; offset >>= 1) val = fmaxf(val, __shfl_xor_sync(0xffffffff, val, offset));
         if (lane_id == 0) smem[0] = val;
