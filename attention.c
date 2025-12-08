@@ -97,115 +97,123 @@ void free_attention(Attention* attn) {
 }
 
 // Softmax forward pass
-static void softmax_forward_attention(float* weights, float* scores, int num_matrices, int seq_len) {
-    for (int m = 0; m < num_matrices; m++) {
-        float* scores_m = &scores[m * seq_len * seq_len];
-        float* weights_m = &weights[m * seq_len * seq_len];
+static void softmax_forward_attention(float* weights, float* scores, int num_heads, int batch_size, int seq_len) {
+    for (int h = 0; h < num_heads; h++) {
+        for (int b = 0; b < batch_size; b++) {
+            float* scores_m = &scores[(h * batch_size + b) * seq_len * seq_len];
+            float* weights_m = &weights[(h * batch_size + b) * seq_len * seq_len];
         
-        for (int i = 0; i < seq_len; i++) {
-            // Find max for numerical stability
-            float max_val = -1e30f;
-            for (int j = 0; j < seq_len; j++) {
-                float val = scores_m[i * seq_len + j];
-                if (val > max_val) max_val = val;
-            }
-            
-            // A_ij = exp(S_ij)/∑_k exp(S_ik)
-            float sum_exp = 0.0f;
-            for (int j = 0; j < seq_len; j++) {
-                float exp_val = expf(scores_m[i * seq_len + j] - max_val);
-                weights_m[i * seq_len + j] = exp_val;
-                sum_exp += exp_val;
-            }
-            
-            // Normalize
-            for (int j = 0; j < seq_len; j++) {
-                weights_m[i * seq_len + j] /= sum_exp;
+            for (int i = 0; i < seq_len; i++) {
+                // Find max for numerical stability
+                float max_val = -1e30f;
+                for (int j = 0; j < seq_len; j++) {
+                    float val = scores_m[i * seq_len + j];
+                    if (val > max_val) max_val = val;
+                }
+                
+                // A_ij = exp(S_ij)/∑_k exp(S_ik)
+                float sum_exp = 0.0f;
+                for (int j = 0; j < seq_len; j++) {
+                    float exp_val = expf(scores_m[i * seq_len + j] - max_val);
+                    weights_m[i * seq_len + j] = exp_val;
+                    sum_exp += exp_val;
+                }
+                
+                // Normalize
+                for (int j = 0; j < seq_len; j++) {
+                    weights_m[i * seq_len + j] /= sum_exp;
+                }
             }
         }
     }
 }
 
 // Causal softmax forward pass
-static void softmax_causal_forward_attention(float* weights, float* scores, int num_matrices, int seq_len) {
-    for (int m = 0; m < num_matrices; m++) {
-        float* scores_m = &scores[m * seq_len * seq_len];
-        float* weights_m = &weights[m * seq_len * seq_len];
+static void softmax_causal_forward_attention(float* weights, float* scores, int num_heads, int batch_size, int seq_len) {
+    for (int h = 0; h < num_heads; h++) {
+        for (int b = 0; b < batch_size; b++) {
+            float* scores_m = &scores[(h * batch_size + b) * seq_len * seq_len];
+            float* weights_m = &weights[(h * batch_size + b) * seq_len * seq_len];
         
-        for (int i = 0; i < seq_len; i++) {
-            // Find max for numerical stability (only consider positions <= i)
-            float max_val = -1e30f;
-            for (int j = 0; j <= i; j++) {
-                float val = scores_m[i * seq_len + j];
-                if (val > max_val) max_val = val;
-            }
-            
-            // A_ij = exp(S_ij)/∑_k exp(S_ik) for j <= i, 0 for j > i
-            float sum_exp = 0.0f;
-            for (int j = 0; j < seq_len; j++) {
-                if (j <= i) {
-                    float exp_val = expf(scores_m[i * seq_len + j] - max_val);
-                    weights_m[i * seq_len + j] = exp_val;
-                    sum_exp += exp_val;
-                } else {
-                    weights_m[i * seq_len + j] = 0.0f;
+            for (int i = 0; i < seq_len; i++) {
+                // Find max for numerical stability (only consider positions <= i)
+                float max_val = -1e30f;
+                for (int j = 0; j <= i; j++) {
+                    float val = scores_m[i * seq_len + j];
+                    if (val > max_val) max_val = val;
                 }
-            }
-            
-            // Normalize only the valid positions
-            for (int j = 0; j <= i; j++) {
-                weights_m[i * seq_len + j] /= sum_exp;
+                
+                // A_ij = exp(S_ij)/∑_k exp(S_ik) for j <= i, 0 for j > i
+                float sum_exp = 0.0f;
+                for (int j = 0; j < seq_len; j++) {
+                    if (j <= i) {
+                        float exp_val = expf(scores_m[i * seq_len + j] - max_val);
+                        weights_m[i * seq_len + j] = exp_val;
+                        sum_exp += exp_val;
+                    } else {
+                        weights_m[i * seq_len + j] = 0.0f;
+                    }
+                }
+                
+                // Normalize only the valid positions
+                for (int j = 0; j <= i; j++) {
+                    weights_m[i * seq_len + j] /= sum_exp;
+                }
             }
         }
     }
 }
 
 // Softmax backward pass
-static void softmax_backward_attention(float* grad_scores, float* grad_weights, float* weights, int num_matrices, int seq_len) {
-    for (int m = 0; m < num_matrices; m++) {
-        float* grad_weights_m = &grad_weights[m * seq_len * seq_len];
-        float* weights_m = &weights[m * seq_len * seq_len];
-        float* grad_scores_m = &grad_scores[m * seq_len * seq_len];
+static void softmax_backward_attention(float* grad_scores, float* grad_weights, float* weights, int num_heads, int batch_size, int seq_len) {
+    for (int h = 0; h < num_heads; h++) {
+        for (int b = 0; b < batch_size; b++) {
+            float* grad_weights_m = &grad_weights[(h * batch_size + b) * seq_len * seq_len];
+            float* weights_m = &weights[(h * batch_size + b) * seq_len * seq_len];
+            float* grad_scores_m = &grad_scores[(h * batch_size + b) * seq_len * seq_len];
         
-        for (int i = 0; i < seq_len; i++) {
-            // Compute ∑_j ∂L/∂A⊙A
-            float sum_term = 0.0f;
-            for (int k = 0; k < seq_len; k++) {
-                int idx = i * seq_len + k;
-                sum_term += grad_weights_m[idx] * weights_m[idx];
-            }
-            
-            // ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A)
-            for (int j = 0; j < seq_len; j++) {
-                int idx = i * seq_len + j;
-                grad_scores_m[idx] = weights_m[idx] * (grad_weights_m[idx] - sum_term);
+            for (int i = 0; i < seq_len; i++) {
+                // Compute ∑_j ∂L/∂A⊙A
+                float sum_term = 0.0f;
+                for (int k = 0; k < seq_len; k++) {
+                    int idx = i * seq_len + k;
+                    sum_term += grad_weights_m[idx] * weights_m[idx];
+                }
+                
+                // ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A)
+                for (int j = 0; j < seq_len; j++) {
+                    int idx = i * seq_len + j;
+                    grad_scores_m[idx] = weights_m[idx] * (grad_weights_m[idx] - sum_term);
+                }
             }
         }
     }
 }
 
 // Causal softmax backward pass
-static void softmax_causal_backward_attention(float* grad_scores, float* grad_weights, float* weights, int num_matrices, int seq_len) {
-    for (int m = 0; m < num_matrices; m++) {
-        float* grad_weights_m = &grad_weights[m * seq_len * seq_len];
-        float* weights_m = &weights[m * seq_len * seq_len];
-        float* grad_scores_m = &grad_scores[m * seq_len * seq_len];
+static void softmax_causal_backward_attention(float* grad_scores, float* grad_weights, float* weights, int num_heads, int batch_size, int seq_len) {
+    for (int h = 0; h < num_heads; h++) {
+        for (int b = 0; b < batch_size; b++) {
+            float* grad_weights_m = &grad_weights[(h * batch_size + b) * seq_len * seq_len];
+            float* weights_m = &weights[(h * batch_size + b) * seq_len * seq_len];
+            float* grad_scores_m = &grad_scores[(h * batch_size + b) * seq_len * seq_len];
         
-        for (int i = 0; i < seq_len; i++) {
-            // Compute ∑_j ∂L/∂A⊙A (only for j <= i)
-            float sum_term = 0.0f;
-            for (int k = 0; k <= i; k++) {
-                int idx = i * seq_len + k;
-                sum_term += grad_weights_m[idx] * weights_m[idx];
-            }
-            
-            // ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A) for j <= i, 0 for j > i
-            for (int j = 0; j < seq_len; j++) {
-                int idx = i * seq_len + j;
-                if (j <= i) {
-                    grad_scores_m[idx] = weights_m[idx] * (grad_weights_m[idx] - sum_term);
-                } else {
-                    grad_scores_m[idx] = 0.0f;
+            for (int i = 0; i < seq_len; i++) {
+                // Compute ∑_j ∂L/∂A⊙A (only for j <= i)
+                float sum_term = 0.0f;
+                for (int k = 0; k <= i; k++) {
+                    int idx = i * seq_len + k;
+                    sum_term += grad_weights_m[idx] * weights_m[idx];
+                }
+                
+                // ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A) for j <= i, 0 for j > i
+                for (int j = 0; j < seq_len; j++) {
+                    int idx = i * seq_len + j;
+                    if (j <= i) {
+                        grad_scores_m[idx] = weights_m[idx] * (grad_weights_m[idx] - sum_term);
+                    } else {
+                        grad_scores_m[idx] = 0.0f;
+                    }
                 }
             }
         }
@@ -328,11 +336,10 @@ void forward_pass_attention(Attention* attn, float* X) {
     }
     
     // Step 4: Apply softmax row-wise
-    int num_matrices = attn->num_heads * attn->batch_size;
     if (attn->is_causal) {
-        softmax_causal_forward_attention(attn->attn_weights, attn->scores, num_matrices, attn->seq_len);
+        softmax_causal_forward_attention(attn->attn_weights, attn->scores, attn->num_heads, attn->batch_size, attn->seq_len);
     } else {
-        softmax_forward_attention(attn->attn_weights, attn->scores, num_matrices, attn->seq_len);
+        softmax_forward_attention(attn->attn_weights, attn->scores, attn->num_heads, attn->batch_size, attn->seq_len);
     }
     
     // Step 5: Compute attention output per head
@@ -440,11 +447,10 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
     }
     
     // Step 4 (backward): Gradient through softmax
-    int num_matrices = attn->num_heads * attn->batch_size;
     if (attn->is_causal) {
-        softmax_causal_backward_attention(attn->grad_scores, attn->grad_weights, attn->attn_weights, num_matrices, attn->seq_len);
+        softmax_causal_backward_attention(attn->grad_scores, attn->grad_weights, attn->attn_weights, attn->num_heads, attn->batch_size, attn->seq_len);
     } else {
-        softmax_backward_attention(attn->grad_scores, attn->grad_weights, attn->attn_weights, num_matrices, attn->seq_len);
+        softmax_backward_attention(attn->grad_scores, attn->grad_weights, attn->attn_weights, attn->num_heads, attn->batch_size, attn->seq_len);
     }
     
     // Step 3 (backward): Gradient through attention scores per head

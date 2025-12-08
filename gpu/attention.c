@@ -171,12 +171,14 @@ void free_attention(Attention* attn) {
 }
 
 // CUDA kernel for softmax forward pass
-__global__ static void softmax_forward_kernel_attention(half* weights, half* scores, int num_matrices, int seq_len) {
-    int m = blockIdx.x;
-    int i = blockIdx.y;
+__global__ static void softmax_forward_kernel_attention(half* weights, half* scores, int num_heads, int batch_size, int seq_len) {
+    int h = blockIdx.x;
+    int b = blockIdx.y;
+    int i = blockIdx.z;
     
-    if (m >= num_matrices || i >= seq_len) return;
+    if (h >= num_heads || b >= batch_size || i >= seq_len) return;
     
+    int m = h * batch_size + b;
     half* scores_m = &scores[m * seq_len * seq_len];
     half* weights_m = &weights[m * seq_len * seq_len];
     
@@ -202,12 +204,14 @@ __global__ static void softmax_forward_kernel_attention(half* weights, half* sco
 }
 
 // CUDA kernel for causal softmax forward pass
-__global__ static void softmax_causal_forward_kernel_attention(half* weights, half* scores, int num_matrices, int seq_len) {
-    int m = blockIdx.x;
-    int i = blockIdx.y;
+__global__ static void softmax_causal_forward_kernel_attention(half* weights, half* scores, int num_heads, int batch_size, int seq_len) {
+    int h = blockIdx.x;
+    int b = blockIdx.y;
+    int i = blockIdx.z;
     
-    if (m >= num_matrices || i >= seq_len) return;
+    if (h >= num_heads || b >= batch_size || i >= seq_len) return;
     
+    int m = h * batch_size + b;
     half* scores_m = &scores[m * seq_len * seq_len];
     half* weights_m = &weights[m * seq_len * seq_len];
     
@@ -237,12 +241,14 @@ __global__ static void softmax_causal_forward_kernel_attention(half* weights, ha
 }
 
 // CUDA kernel for softmax backward pass
-__global__ static void softmax_backward_kernel_attention(half* grad_scores, half* grad_weights, half* weights, int num_matrices, int seq_len) {
-    int m = blockIdx.x;
-    int i = blockIdx.y;
+__global__ static void softmax_backward_kernel_attention(half* grad_scores, half* grad_weights, half* weights, int num_heads, int batch_size, int seq_len) {
+    int h = blockIdx.x;
+    int b = blockIdx.y;
+    int i = blockIdx.z;
     
-    if (m >= num_matrices || i >= seq_len) return;
+    if (h >= num_heads || b >= batch_size || i >= seq_len) return;
     
+    int m = h * batch_size + b;
     half* grad_weights_m = &grad_weights[m * seq_len * seq_len];
     half* weights_m = &weights[m * seq_len * seq_len];
     half* grad_scores_m = &grad_scores[m * seq_len * seq_len];
@@ -263,12 +269,14 @@ __global__ static void softmax_backward_kernel_attention(half* grad_scores, half
 }
 
 // CUDA kernel for causal softmax backward pass
-__global__ static void softmax_causal_backward_kernel_attention(half* grad_scores, half* grad_weights, half* weights, int num_matrices, int seq_len) {
-    int m = blockIdx.x;
-    int i = blockIdx.y;
+__global__ static void softmax_causal_backward_kernel_attention(half* grad_scores, half* grad_weights, half* weights, int num_heads, int batch_size, int seq_len) {
+    int h = blockIdx.x;
+    int b = blockIdx.y;
+    int i = blockIdx.z;
     
-    if (m >= num_matrices || i >= seq_len) return;
+    if (h >= num_heads || b >= batch_size || i >= seq_len) return;
     
+    int m = h * batch_size + b;
     half* grad_weights_m = &grad_weights[m * seq_len * seq_len];
     half* weights_m = &weights[m * seq_len * seq_len];
     half* grad_scores_m = &grad_scores[m * seq_len * seq_len];
@@ -398,12 +406,11 @@ void forward_pass_attention(Attention* attn, half* d_X) {
     }
     
     // Step 4: Apply softmax over all (head, batch) matrices
-    int num_matrices = attn->num_heads * attn->batch_size;
-    dim3 grid(num_matrices, attn->seq_len);
+    dim3 grid(attn->num_heads, attn->batch_size, attn->seq_len);
     if (attn->is_causal) {
-        softmax_causal_forward_kernel_attention<<<grid, 1>>>(attn->d_attn_weights, attn->d_scores, num_matrices, attn->seq_len);
+        softmax_causal_forward_kernel_attention<<<grid, 1>>>(attn->d_attn_weights, attn->d_scores, attn->num_heads, attn->batch_size, attn->seq_len);
     } else {
-        softmax_forward_kernel_attention<<<grid, 1>>>(attn->d_attn_weights, attn->d_scores, num_matrices, attn->seq_len);
+        softmax_forward_kernel_attention<<<grid, 1>>>(attn->d_attn_weights, attn->d_scores, attn->num_heads, attn->batch_size, attn->seq_len);
     }
     
     // Step 5: Compute attention output per head (batched: [L x L] * [L x d_h] -> [L x d_h])
@@ -511,12 +518,11 @@ void backward_pass_attention(Attention* attn, half* d_X, half* d_grad_X) {
     }
     
     // Step 4 (backward): Gradient through softmax
-    int num_matrices = attn->num_heads * attn->batch_size;
-    dim3 grid(num_matrices, attn->seq_len);
+    dim3 grid(attn->num_heads, attn->batch_size, attn->seq_len);
     if (attn->is_causal) {
-        softmax_causal_backward_kernel_attention<<<grid, 1>>>(attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, num_matrices, attn->seq_len);
+        softmax_causal_backward_kernel_attention<<<grid, 1>>>(attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->num_heads, attn->batch_size, attn->seq_len);
     } else {
-        softmax_backward_kernel_attention<<<grid, 1>>>(attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, num_matrices, attn->seq_len);
+        softmax_backward_kernel_attention<<<grid, 1>>>(attn->d_grad_scores, attn->d_grad_weights, attn->d_attn_weights, attn->num_heads, attn->batch_size, attn->seq_len);
     }
     
     // Step 3 (backward): Gradient through attention scores per head
