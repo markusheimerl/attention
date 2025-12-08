@@ -36,16 +36,16 @@ typedef struct {
     float* Q;            // Query matrix [batch_size x seq_len x d_model]
     float* K;            // Key matrix [batch_size x seq_len x d_model]
     float* V;            // Value matrix [batch_size x seq_len x d_model]
-    float* scores;       // Attention scores [batch_size x seq_len x seq_len]
-    float* attn_weights; // Attention weights [batch_size x seq_len x seq_len]
+    float* scores;       // Attention scores [num_heads x batch_size x seq_len x seq_len]
+    float* attn_weights; // Attention weights [num_heads x batch_size x seq_len x seq_len]
     float* attn_output;  // Attention output [batch_size x seq_len x d_model]
     float* output;       // Final output [batch_size x seq_len x d_model]
     
     // Backward pass buffers
     float* grad_output;      // [batch_size x seq_len x d_model]
     float* grad_attn_output; // [batch_size x seq_len x d_model]
-    float* grad_weights;     // [batch_size x seq_len x seq_len]
-    float* grad_scores;      // [batch_size x seq_len x seq_len]
+    float* grad_weights;     // [num_heads x batch_size x seq_len x seq_len]
+    float* grad_scores;      // [num_heads x batch_size x seq_len x seq_len]
     float* grad_Q;           // [batch_size x seq_len x d_model]
     float* grad_K;           // [batch_size x seq_len x d_model]
     float* grad_V;           // [batch_size x seq_len x d_model]
@@ -54,13 +54,15 @@ typedef struct {
     int seq_len;
     int d_model;
     int batch_size;
+    int num_heads;
+    int head_dim;
     float scale;
     bool is_causal;
     bool use_rope;
 } Attention;
 
 // Function prototypes
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, bool use_rope);
+Attention* init_attention(int seq_len, int d_model, int num_heads, int batch_size, bool is_causal, bool use_rope);
 void free_attention(Attention* attn);
 void forward_pass_attention(Attention* attn, float* X);
 float calculate_loss_attention(Attention* attn, float* y);
@@ -69,6 +71,6 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X);
 void update_weights_attention(Attention* attn, float learning_rate, int batch_size);
 void reset_optimizer_attention(Attention* attn);
 void serialize_attention(Attention* attn, FILE* file);
-Attention* deserialize_attention(FILE* file, int seq_len, int batch_size);
+Attention* deserialize_attention(FILE* file, int batch_size, int seq_len, int num_heads);
 
 #endif

@@ -1,14 +1,22 @@
 #include "attention.h"
 
 // Initialize the attention layer
-Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_causal, bool use_rope) {
+Attention* init_attention(int seq_len, int d_model, int num_heads, int batch_size, bool is_causal, bool use_rope) {
     Attention* attn = (Attention*)malloc(sizeof(Attention));
+    
+    // Validate num_heads
+    if (num_heads <= 0 || d_model % num_heads != 0) {
+        fprintf(stderr, "d_model (%d) must be divisible by num_heads (%d)\n", d_model, num_heads);
+        exit(EXIT_FAILURE);
+    }
     
     // Store dimensions
     attn->seq_len = seq_len;
     attn->d_model = d_model;
     attn->batch_size = batch_size;
-    attn->scale = 1.0f / sqrtf(d_model);
+    attn->num_heads = num_heads;
+    attn->head_dim = d_model / num_heads;
+    attn->scale = 1.0f / sqrtf(attn->head_dim);
     attn->is_causal = is_causal;
     attn->use_rope = use_rope;
     
@@ -21,7 +29,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     
     size_t weight_size = d_model * d_model;
     size_t seq_batch_size = batch_size * seq_len * d_model;
-    size_t attn_matrix_size = batch_size * seq_len * seq_len;
+    size_t attn_matrix_size = num_heads * batch_size * seq_len * seq_len;
     
     // Allocate weights and gradients
     attn->W_q = (float*)malloc(weight_size * sizeof(float));
@@ -58,7 +66,7 @@ Attention* init_attention(int seq_len, int d_model, int batch_size, bool is_caus
     attn->grad_attn_output = attn->attn_output;
     attn->grad_weights = (float*)malloc(attn_matrix_size * sizeof(float));
     attn->grad_scores = attn->scores;
-    attn->grad_Q = attn->Q;
+    attn->grad_Q = attn->attn_output;
     attn->grad_K = attn->K;
     attn->grad_V = attn->V;
     
@@ -89,46 +97,46 @@ void free_attention(Attention* attn) {
 }
 
 // Softmax forward pass
-static void softmax_forward_attention(float* weights, float* scores, int batch_size, int seq_len) {
-    for (int b = 0; b < batch_size; b++) {
-        float* scores_b = &scores[b * seq_len * seq_len];
-        float* weights_b = &weights[b * seq_len * seq_len];
+static void softmax_forward_attention(float* weights, float* scores, int num_matrices, int seq_len) {
+    for (int m = 0; m < num_matrices; m++) {
+        float* scores_m = &scores[m * seq_len * seq_len];
+        float* weights_m = &weights[m * seq_len * seq_len];
         
         for (int i = 0; i < seq_len; i++) {
             // Find max for numerical stability
             float max_val = -1e30f;
             for (int j = 0; j < seq_len; j++) {
-                float val = scores_b[i * seq_len + j];
+                float val = scores_m[i * seq_len + j];
                 if (val > max_val) max_val = val;
             }
             
             // A_ij = exp(S_ij)/∑_k exp(S_ik)
             float sum_exp = 0.0f;
             for (int j = 0; j < seq_len; j++) {
-                float exp_val = expf(scores_b[i * seq_len + j] - max_val);
-                weights_b[i * seq_len + j] = exp_val;
+                float exp_val = expf(scores_m[i * seq_len + j] - max_val);
+                weights_m[i * seq_len + j] = exp_val;
                 sum_exp += exp_val;
             }
             
             // Normalize
             for (int j = 0; j < seq_len; j++) {
-                weights_b[i * seq_len + j] /= sum_exp;
+                weights_m[i * seq_len + j] /= sum_exp;
             }
         }
     }
 }
 
 // Causal softmax forward pass
-static void softmax_causal_forward_attention(float* weights, float* scores, int batch_size, int seq_len) {
-    for (int b = 0; b < batch_size; b++) {
-        float* scores_b = &scores[b * seq_len * seq_len];
-        float* weights_b = &weights[b * seq_len * seq_len];
+static void softmax_causal_forward_attention(float* weights, float* scores, int num_matrices, int seq_len) {
+    for (int m = 0; m < num_matrices; m++) {
+        float* scores_m = &scores[m * seq_len * seq_len];
+        float* weights_m = &weights[m * seq_len * seq_len];
         
         for (int i = 0; i < seq_len; i++) {
             // Find max for numerical stability (only consider positions <= i)
             float max_val = -1e30f;
             for (int j = 0; j <= i; j++) {
-                float val = scores_b[i * seq_len + j];
+                float val = scores_m[i * seq_len + j];
                 if (val > max_val) max_val = val;
             }
             
@@ -136,68 +144,68 @@ static void softmax_causal_forward_attention(float* weights, float* scores, int 
             float sum_exp = 0.0f;
             for (int j = 0; j < seq_len; j++) {
                 if (j <= i) {
-                    float exp_val = expf(scores_b[i * seq_len + j] - max_val);
-                    weights_b[i * seq_len + j] = exp_val;
+                    float exp_val = expf(scores_m[i * seq_len + j] - max_val);
+                    weights_m[i * seq_len + j] = exp_val;
                     sum_exp += exp_val;
                 } else {
-                    weights_b[i * seq_len + j] = 0.0f;
+                    weights_m[i * seq_len + j] = 0.0f;
                 }
             }
             
             // Normalize only the valid positions
             for (int j = 0; j <= i; j++) {
-                weights_b[i * seq_len + j] /= sum_exp;
+                weights_m[i * seq_len + j] /= sum_exp;
             }
         }
     }
 }
 
 // Softmax backward pass
-static void softmax_backward_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len) {
-    for (int b = 0; b < batch_size; b++) {
-        float* grad_weights_b = &grad_weights[b * seq_len * seq_len];
-        float* weights_b = &weights[b * seq_len * seq_len];
-        float* grad_scores_b = &grad_scores[b * seq_len * seq_len];
+static void softmax_backward_attention(float* grad_scores, float* grad_weights, float* weights, int num_matrices, int seq_len) {
+    for (int m = 0; m < num_matrices; m++) {
+        float* grad_weights_m = &grad_weights[m * seq_len * seq_len];
+        float* weights_m = &weights[m * seq_len * seq_len];
+        float* grad_scores_m = &grad_scores[m * seq_len * seq_len];
         
         for (int i = 0; i < seq_len; i++) {
             // Compute ∑_j ∂L/∂A⊙A
             float sum_term = 0.0f;
             for (int k = 0; k < seq_len; k++) {
                 int idx = i * seq_len + k;
-                sum_term += grad_weights_b[idx] * weights_b[idx];
+                sum_term += grad_weights_m[idx] * weights_m[idx];
             }
             
             // ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A)
             for (int j = 0; j < seq_len; j++) {
                 int idx = i * seq_len + j;
-                grad_scores_b[idx] = weights_b[idx] * (grad_weights_b[idx] - sum_term);
+                grad_scores_m[idx] = weights_m[idx] * (grad_weights_m[idx] - sum_term);
             }
         }
     }
 }
 
 // Causal softmax backward pass
-static void softmax_causal_backward_attention(float* grad_scores, float* grad_weights, float* weights, int batch_size, int seq_len) {
-    for (int b = 0; b < batch_size; b++) {
-        float* grad_weights_b = &grad_weights[b * seq_len * seq_len];
-        float* weights_b = &weights[b * seq_len * seq_len];
-        float* grad_scores_b = &grad_scores[b * seq_len * seq_len];
+static void softmax_causal_backward_attention(float* grad_scores, float* grad_weights, float* weights, int num_matrices, int seq_len) {
+    for (int m = 0; m < num_matrices; m++) {
+        float* grad_weights_m = &grad_weights[m * seq_len * seq_len];
+        float* weights_m = &weights[m * seq_len * seq_len];
+        float* grad_scores_m = &grad_scores[m * seq_len * seq_len];
         
         for (int i = 0; i < seq_len; i++) {
             // Compute ∑_j ∂L/∂A⊙A (only for j <= i)
             float sum_term = 0.0f;
             for (int k = 0; k <= i; k++) {
                 int idx = i * seq_len + k;
-                sum_term += grad_weights_b[idx] * weights_b[idx];
+                sum_term += grad_weights_m[idx] * weights_m[idx];
             }
             
             // ∂L/∂S = A⊙(∂L/∂A - ∑_j ∂L/∂A⊙A) for j <= i, 0 for j > i
             for (int j = 0; j < seq_len; j++) {
                 int idx = i * seq_len + j;
                 if (j <= i) {
-                    grad_scores_b[idx] = weights_b[idx] * (grad_weights_b[idx] - sum_term);
+                    grad_scores_m[idx] = weights_m[idx] * (grad_weights_m[idx] - sum_term);
                 } else {
-                    grad_scores_b[idx] = 0.0f;
+                    grad_scores_m[idx] = 0.0f;
                 }
             }
         }
@@ -303,41 +311,44 @@ void forward_pass_attention(Attention* attn, float* X) {
         rope_forward_attention(attn->Q, attn->K, attn->batch_size, attn->seq_len, attn->d_model);
     }
     
-    // Step 3: Compute attention scores
-    // S = QKᵀ/√d_model
-    for (int b = 0; b < attn->batch_size; b++) {
-        float* Q_b = &attn->Q[b * attn->seq_len * attn->d_model];
-        float* K_b = &attn->K[b * attn->seq_len * attn->d_model];
-        float* scores_b = &attn->scores[b * attn->seq_len * attn->seq_len];
-        
-        // S = QKᵀ/√d_model
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                    attn->seq_len, attn->seq_len, attn->d_model,
-                    attn->scale, Q_b, attn->d_model,
-                    K_b, attn->d_model,
-                    0.0f, scores_b, attn->seq_len);
+    // Step 3: Compute attention scores per head
+    // S_h = Q_h K_h^T / √head_dim
+    for (int h = 0; h < attn->num_heads; h++) {
+        for (int b = 0; b < attn->batch_size; b++) {
+            float* Q_hb = &attn->Q[b * attn->seq_len * attn->d_model + h * attn->head_dim];
+            float* K_hb = &attn->K[b * attn->seq_len * attn->d_model + h * attn->head_dim];
+            float* scores_hb = &attn->scores[(h * attn->batch_size + b) * attn->seq_len * attn->seq_len];
+            
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                        attn->seq_len, attn->seq_len, attn->head_dim,
+                        attn->scale, Q_hb, attn->d_model,
+                        K_hb, attn->d_model,
+                        0.0f, scores_hb, attn->seq_len);
+        }
     }
     
     // Step 4: Apply softmax row-wise
+    int num_matrices = attn->num_heads * attn->batch_size;
     if (attn->is_causal) {
-        softmax_causal_forward_attention(attn->attn_weights, attn->scores, attn->batch_size, attn->seq_len);
+        softmax_causal_forward_attention(attn->attn_weights, attn->scores, num_matrices, attn->seq_len);
     } else {
-        softmax_forward_attention(attn->attn_weights, attn->scores, attn->batch_size, attn->seq_len);
+        softmax_forward_attention(attn->attn_weights, attn->scores, num_matrices, attn->seq_len);
     }
     
-    // Step 5: Compute attention output
-    // Z = AV
-    for (int b = 0; b < attn->batch_size; b++) {
-        float* weights_b = &attn->attn_weights[b * attn->seq_len * attn->seq_len];
-        float* V_b = &attn->V[b * attn->seq_len * attn->d_model];
-        float* attn_output_b = &attn->attn_output[b * attn->seq_len * attn->d_model];
-        
-        // Z = AV
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                    attn->seq_len, attn->d_model, attn->seq_len,
-                    1.0f, weights_b, attn->seq_len,
-                    V_b, attn->d_model,
-                    0.0f, attn_output_b, attn->d_model);
+    // Step 5: Compute attention output per head
+    // Z_h = A_h V_h
+    for (int h = 0; h < attn->num_heads; h++) {
+        for (int b = 0; b < attn->batch_size; b++) {
+            float* weights_hb = &attn->attn_weights[(h * attn->batch_size + b) * attn->seq_len * attn->seq_len];
+            float* V_hb = &attn->V[b * attn->seq_len * attn->d_model + h * attn->head_dim];
+            float* attn_output_hb = &attn->attn_output[b * attn->seq_len * attn->d_model + h * attn->head_dim];
+            
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                        attn->seq_len, attn->head_dim, attn->seq_len,
+                        1.0f, weights_hb, attn->seq_len,
+                        V_hb, attn->d_model,
+                        0.0f, attn_output_hb, attn->d_model);
+        }
     }
     
     // Step 6: Apply output projection
@@ -402,59 +413,64 @@ void backward_pass_attention(Attention* attn, float* X, float* grad_X) {
                     0.0f, grad_attn_output_b, attn->d_model);
     }
     
-    // Step 5 (backward): Gradient through attention output computation
-    // ∂L/∂A = (∂L/∂Z)Vᵀ, ∂L/∂V = Aᵀ(∂L/∂Z)
-    for (int b = 0; b < attn->batch_size; b++) {
-        float* grad_attn_output_b = &attn->grad_attn_output[b * attn->seq_len * attn->d_model];
-        float* weights_b = &attn->attn_weights[b * attn->seq_len * attn->seq_len];
-        float* V_b = &attn->V[b * attn->seq_len * attn->d_model];
-        float* grad_weights_b = &attn->grad_weights[b * attn->seq_len * attn->seq_len];
-        float* grad_V_b = &attn->grad_V[b * attn->seq_len * attn->d_model];
-        
-        // ∂L/∂A = (∂L/∂Z)Vᵀ
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-                    attn->seq_len, attn->seq_len, attn->d_model,
-                    1.0f, grad_attn_output_b, attn->d_model,
-                    V_b, attn->d_model,
-                    0.0f, grad_weights_b, attn->seq_len);
-        
-        // ∂L/∂V = Aᵀ(∂L/∂Z)
-        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                    attn->seq_len, attn->d_model, attn->seq_len,
-                    1.0f, weights_b, attn->seq_len,
-                    grad_attn_output_b, attn->d_model,
-                    0.0f, grad_V_b, attn->d_model);
+    // Step 5 (backward): Gradient through attention output computation per head
+    // ∂L/∂A_h = (∂L/∂Z_h)V_hᵀ, ∂L/∂V_h = A_hᵀ(∂L/∂Z_h)
+    for (int h = 0; h < attn->num_heads; h++) {
+        for (int b = 0; b < attn->batch_size; b++) {
+            float* grad_attn_output_hb = &attn->grad_attn_output[b * attn->seq_len * attn->d_model + h * attn->head_dim];
+            float* weights_hb = &attn->attn_weights[(h * attn->batch_size + b) * attn->seq_len * attn->seq_len];
+            float* V_hb = &attn->V[b * attn->seq_len * attn->d_model + h * attn->head_dim];
+            float* grad_weights_hb = &attn->grad_weights[(h * attn->batch_size + b) * attn->seq_len * attn->seq_len];
+            float* grad_V_hb = &attn->grad_V[b * attn->seq_len * attn->d_model + h * attn->head_dim];
+            
+            // ∂L/∂A_h = (∂L/∂Z_h)V_hᵀ
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+                        attn->seq_len, attn->seq_len, attn->head_dim,
+                        1.0f, grad_attn_output_hb, attn->d_model,
+                        V_hb, attn->d_model,
+                        0.0f, grad_weights_hb, attn->seq_len);
+            
+            // ∂L/∂V_h = A_hᵀ(∂L/∂Z_h)
+            cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                        attn->seq_len, attn->head_dim, attn->seq_len,
+                        1.0f, weights_hb, attn->seq_len,
+                        grad_attn_output_hb, attn->d_model,
+                        0.0f, grad_V_hb, attn->d_model);
+        }
     }
     
     // Step 4 (backward): Gradient through softmax
+    int num_matrices = attn->num_heads * attn->batch_size;
     if (attn->is_causal) {
-        softmax_causal_backward_attention(attn->grad_scores, attn->grad_weights, attn->attn_weights, attn->batch_size, attn->seq_len);
+        softmax_causal_backward_attention(attn->grad_scores, attn->grad_weights, attn->attn_weights, num_matrices, attn->seq_len);
     } else {
-        softmax_backward_attention(attn->grad_scores, attn->grad_weights, attn->attn_weights, attn->batch_size, attn->seq_len);
+        softmax_backward_attention(attn->grad_scores, attn->grad_weights, attn->attn_weights, num_matrices, attn->seq_len);
     }
     
-    // Step 3 (backward): Gradient through attention scores
-    // ∂L/∂Q = (∂L/∂S)K/√d_model, ∂L/∂K = (∂L/∂S)ᵀQ/√d_model
-    for (int b = 0; b < attn->batch_size; b++) {
-        float* grad_scores_b = &attn->grad_scores[b * attn->seq_len * attn->seq_len];
-        float* Q_b = &attn->Q[b * attn->seq_len * attn->d_model];
-        float* K_b = &attn->K[b * attn->seq_len * attn->d_model];
-        float* grad_Q_b = &attn->grad_Q[b * attn->seq_len * attn->d_model];
-        float* grad_K_b = &attn->grad_K[b * attn->seq_len * attn->d_model];
-        
-        // ∂L/∂Q = (∂L/∂S)K/√d_model
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                    attn->seq_len, attn->d_model, attn->seq_len,
-                    attn->scale, grad_scores_b, attn->seq_len,
-                    K_b, attn->d_model,
-                    0.0f, grad_Q_b, attn->d_model);
-        
-        // ∂L/∂K = (∂L/∂S)ᵀQ/√d_model
-        cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-                    attn->seq_len, attn->d_model, attn->seq_len,
-                    attn->scale, grad_scores_b, attn->seq_len,
-                    Q_b, attn->d_model,
-                    0.0f, grad_K_b, attn->d_model);
+    // Step 3 (backward): Gradient through attention scores per head
+    // ∂L/∂Q_h = (∂L/∂S_h)K_h/√head_dim, ∂L/∂K_h = (∂L/∂S_h)ᵀQ_h/√head_dim
+    for (int h = 0; h < attn->num_heads; h++) {
+        for (int b = 0; b < attn->batch_size; b++) {
+            float* grad_scores_hb = &attn->grad_scores[(h * attn->batch_size + b) * attn->seq_len * attn->seq_len];
+            float* Q_hb = &attn->Q[b * attn->seq_len * attn->d_model + h * attn->head_dim];
+            float* K_hb = &attn->K[b * attn->seq_len * attn->d_model + h * attn->head_dim];
+            float* grad_Q_hb = &attn->grad_Q[b * attn->seq_len * attn->d_model + h * attn->head_dim];
+            float* grad_K_hb = &attn->grad_K[b * attn->seq_len * attn->d_model + h * attn->head_dim];
+            
+            // ∂L/∂Q_h = (∂L/∂S_h)K_h/√head_dim
+            cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
+                        attn->seq_len, attn->head_dim, attn->seq_len,
+                        attn->scale, grad_scores_hb, attn->seq_len,
+                        K_hb, attn->d_model,
+                        0.0f, grad_Q_hb, attn->d_model);
+            
+            // ∂L/∂K_h = (∂L/∂S_h)ᵀQ_h/√head_dim
+            cblas_sgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+                        attn->seq_len, attn->head_dim, attn->seq_len,
+                        attn->scale, grad_scores_hb, attn->seq_len,
+                        Q_hb, attn->d_model,
+                        0.0f, grad_K_hb, attn->d_model);
+        }
     }
     
     // Step 2 (backward): Apply inverse RoPE to grad_Q and grad_K
@@ -598,7 +614,7 @@ void serialize_attention(Attention* attn, FILE* file) {
 }
 
 // Deserialize attention from a file
-Attention* deserialize_attention(FILE* file, int batch_size, int seq_len) {
+Attention* deserialize_attention(FILE* file, int batch_size, int seq_len, int num_heads) {
     // Read dimension
     int d_model;
     bool is_causal, use_rope;
@@ -607,7 +623,7 @@ Attention* deserialize_attention(FILE* file, int batch_size, int seq_len) {
     fread(&use_rope, sizeof(bool), 1, file);
     
     // Initialize attention layer
-    Attention* attn = init_attention(seq_len, d_model, batch_size, is_causal, use_rope);
+    Attention* attn = init_attention(seq_len, d_model, num_heads, batch_size, is_causal, use_rope);
     
     int weight_size = d_model * d_model;
     

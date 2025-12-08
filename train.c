@@ -13,6 +13,7 @@ int main() {
     // Parameters
     const int seq_len = 128;
     const int d_model = 64;
+    const int num_heads = 8;
     const int num_samples = 1024;
     const int batch_size = 32;
     
@@ -21,7 +22,7 @@ int main() {
     generate_data(&X, &y, seq_len, num_samples, d_model, -5.0f, 5.0f);
     
     // Initialize attention layer
-    Attention* attn = init_attention(seq_len, d_model, batch_size, false, false);
+    Attention* attn = init_attention(seq_len, d_model, num_heads, batch_size, false, false);
     
     // Training parameters
     const int num_epochs = 50;
@@ -81,7 +82,7 @@ int main() {
     printf("\nVerifying saved model...\n");
 
     model_file = fopen(model_fname, "rb");
-    Attention* loaded_attn = deserialize_attention(model_file, batch_size, seq_len);
+    Attention* loaded_attn = deserialize_attention(model_file, batch_size, seq_len, num_heads);
     fclose(model_file);
     printf("Model loaded from %s\n", model_fname);
 
